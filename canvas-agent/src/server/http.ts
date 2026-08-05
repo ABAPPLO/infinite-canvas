@@ -13,6 +13,9 @@ import { logger } from "../utils/logger.js";
 import { checkVersions } from "../version-check.js";
 import { SkillStore, SkillStoreError } from "../skills/store.js";
 
+const MAX_FETCH_BYTES = 30 * 1024 * 1024;
+const FETCH_TIMEOUT_MS = 30_000;
+
 /** 启动仅监听本机的 Canvas Agent HTTP 服务。 */
 export function startHttpServer() {
     const config = loadConfig(true);
@@ -161,6 +164,35 @@ export function startHttpServer() {
         if (!file.isFile()) return res.status(400).json({ ok: false, error: "图片文件无效" });
         res.setHeader("Cache-Control", "no-store");
         res.type(path.extname(filePath)).send(await readFile(filePath));
+    }));
+    app.post("/agent/fetch", route(async (req, res) => {
+        const url = String(req.body?.url || "");
+        if (!/^https?:\/\//i.test(url)) return res.status(400).json({ ok: false, error: "仅支持 http/https 地址" });
+        let parsed: URL;
+        try {
+            parsed = new URL(url);
+        } catch {
+            return res.status(400).json({ ok: false, error: "地址格式无效" });
+        }
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return res.status(400).json({ ok: false, error: "仅支持 http/https 地址" });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        try {
+            const upstream = await fetch(url, { redirect: "follow", signal: controller.signal });
+            if (!upstream.ok || !upstream.body) return res.status(502).json({ ok: false, error: `上游返回 ${upstream.status}` });
+            const contentLength = Number(upstream.headers.get("content-length") || 0);
+            if (contentLength && contentLength > MAX_FETCH_BYTES) return res.status(413).json({ ok: false, error: "文件过大" });
+            const type = upstream.headers.get("content-type") || "application/octet-stream";
+            const buf = Buffer.from(await upstream.arrayBuffer());
+            if (buf.length > MAX_FETCH_BYTES) return res.status(413).json({ ok: false, error: "文件过大" });
+            res.setHeader("Cache-Control", "no-store");
+            res.type(type).send(buf);
+        } catch (error) {
+            const message = error instanceof Error ? error.name === "AbortError" ? "上游请求超时" : error.message : "上游请求失败";
+            res.status(502).json({ ok: false, error: message });
+        } finally {
+            clearTimeout(timer);
+        }
     }));
     app.post("/api/tools", route(async (req, res) => res.json({ ok: true, result: await session.callTool(req.body?.name, req.body?.input || {}) })));
     app.get("/agent/codex/workspace", (_req, res) => {
