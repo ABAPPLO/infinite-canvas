@@ -21,7 +21,20 @@ export async function fetchBlob(input: string | Blob): Promise<Blob> {
                 });
                 if (res.ok) return await res.blob();
             } catch {
-                /* 代理不可用，落到直连 */
+                /* 代理不可用，继续向下回退 */
+            }
+        }
+        if (import.meta.env.DEV) {
+            try {
+                // 开发服务器的同源代理（vite.config.ts localFetchProxy），不依赖 canvas-agent
+                const res = await fetch("/api/fetch-blob", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ url: input }),
+                });
+                if (res.ok) return await res.blob();
+            } catch {
+                /* 开发代理不可用，落到直连 */
             }
         }
         return (await fetch(input)).blob();

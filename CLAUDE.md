@@ -24,8 +24,8 @@ bun run format         # prettier --write .
 bun run format:check   # prettier --check .
 
 # Docker
-docker compose -f docker-compose.local.yml up -d --build   # local image build, :3000
-docker compose up -d                                       # pull prebuilt ghcr image, :3000
+docker compose up -d --build                               # local image build (default docker-compose.yml), :3000
+docker compose -f docker-compose.yml.pro up -d             # pull prebuilt ghcr image, :3000
 # Optional analytics via environment: ANALYTICS_GA4_ID, ANALYTICS_BAIDU_ID
 
 # Canvas Agent (local Node bridge between the web app and Codex/Claude Code, in canvas-agent/)
@@ -33,12 +33,12 @@ cd canvas-agent
 npm install
 npm run build         # tsc -> dist/
 node dist/index.js    # start HTTP agent server (default 127.0.0.1:17371, prints Local URL + Connect token)
-npm run test          # tsx --test src/canvas-session.test.ts (only test in the repo)
+npm run test          # tsx --test src/canvas/session.test.ts src/agent/codex-client.test.ts src/agent/codex-history.test.ts src/skills/store.test.ts
 npm run dev           # tsx src/index.ts (run without build)
 # MCP mode (registers canvas tools into Codex/Claude): node dist/index.js mcp
 ```
 
-There is **no test framework for the frontend** — no tests exist there. The only test is `canvas-agent`'s session test run via `tsx --test`. Per `AGENTS.md`, do not run build/test/typecheck after writing code; the user does that themselves.
+There is **no test framework for the frontend** — no tests exist there. The only tests are `canvas-agent`'s, run via `tsx --test`: `src/canvas/session.test.ts` (session), `src/agent/codex-client.test.ts`, `src/agent/codex-history.test.ts`, `src/skills/store.test.ts`. Per `AGENTS.md`, do not run build/test/typecheck after writing code; the user does that themselves.
 
 Package manager: **bun** for `web/`, **npm** for `canvas-agent/` and plugins. The Docker build uses `oven/bun` for the web stage.
 
