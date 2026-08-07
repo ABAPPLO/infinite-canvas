@@ -30,7 +30,7 @@ export function PromptSourceEditorDrawer({ open, source, onSave, onClose }: { op
     return (
         <Drawer
             open={open}
-            width={560}
+            size={560}
             title={t(source?.name ? "config.promptSources.editor.editTitle" : "config.promptSources.editor.addTitle")}
             onClose={onClose}
             styles={{ body: { paddingTop: 16 } }}

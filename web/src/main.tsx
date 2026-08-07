@@ -9,8 +9,10 @@ import { AppProviders } from "@/components/layout/app-providers";
 import "@/i18n";
 import { initAnalytics } from "@/lib/analytics";
 import { router } from "@/router";
+import { installAiProxy } from "@/services/api/ai-proxy";
 
 initAnalytics();
+installAiProxy();
 
 document.body.style.fontFamily = '"SF Pro Display","SF Pro Text","PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif';
 
