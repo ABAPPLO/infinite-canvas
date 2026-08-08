@@ -94,6 +94,9 @@ export function convertGraphToPrompt(graph: GraphJson, objectInfo: ComfyuiObject
         // Widget inputs: map widgets_values positionally onto widget input names (object_info order).
         const widgetNames = widgetInputNames(def, slotNames);
         const widgetValues = Array.isArray(node.widgets_values) ? node.widgets_values : [];
+        if (widgetValues.length < widgetNames.length) {
+            errors.push(i18n.t("config.comfyui.widgetCountMismatch", { id: node.id, type: node.type }));
+        }
         widgetNames.forEach((name, index) => {
             if (index < widgetValues.length && !(name in inputs)) inputs[name] = widgetValues[index];
         });
