@@ -107,8 +107,8 @@ export function convertGraphToPrompt(graph: GraphJson, objectInfo: ComfyuiObject
 }
 
 export type ComfyuiNodeCandidates = {
-    textInputs: Array<{ id: string; classType: string; input: string }>;   // candidate prompt slots (string-literal inputs)
-    referenceImages: Array<{ id: string; input: string }>;                 // LoadImage nodes
+    textInputs: Array<{ id: string; classType: string; input: string }>; // candidate prompt slots (string-literal inputs)
+    referenceImages: Array<{ id: string; input: string }>; // LoadImage nodes
     width: Array<{ id: string; input: string }>;
     height: Array<{ id: string; input: string }>;
     seed: Array<{ id: string; input: string }>;
@@ -165,4 +165,62 @@ export function parseComfyuiPromptNodes(promptJson: Record<string, { class_type:
     const firstImageOutput = candidates.outputs.find((o) => o.capability === "image");
     if (firstImageOutput) defaults.outputNode = firstImageOutput.id;
     return { candidates, defaults };
+}
+
+export type ComfyuiWorkflowSummary = { name: string; promptJson: Record<string, any>; ok: boolean; reason?: string; source?: "server" | "import" };
+
+type UserdataEntry = { path?: string; name?: string; type?: string };
+
+/**
+ * Fetch all workflows from ComfyUI's server-side workflow list (userdata/workflows).
+ * Each graph-format file is converted to prompt format. Throws a specific error if the list API is
+ * unavailable or empty, so the UI can fall back to manual JSON import.
+ */
+export async function fetchComfyuiWorkflows(target: string, signal?: AbortSignal): Promise<ComfyuiWorkflowSummary[]> {
+    const list = await comfyuiRequest<UserdataEntry[]>(target, "get", "/api/userdata/workflows?recurse=true", undefined, signal);
+    const files = (Array.isArray(list) ? list : []).filter((entry) => (entry.path || entry.name || "").endsWith(".json"));
+    if (!files.length) throw new Error(i18n.t("config.comfyui.noServerWorkflows"));
+
+    const objectInfo = await getObjectInfo(target, signal);
+    const results: ComfyuiWorkflowSummary[] = [];
+    for (const entry of files) {
+        const filePath = entry.path || entry.name || "";
+        const name = filePath.replace(/^workflows\//, "").replace(/\.json$/, "");
+        try {
+            const raw = await comfyuiRequest<unknown>(target, "get", `/api/userdata/${filePath}`, undefined, signal);
+            const format = detectWorkflowFormat(raw);
+            if (format === "prompt") {
+                const promptJson = raw as Record<string, any>;
+                results.push({ name, promptJson, ok: Object.keys(promptJson).length > 0, source: "server" });
+            } else {
+                const { prompt, errors } = convertGraphToPrompt(raw as GraphJson, objectInfo);
+                if (errors.length > 0) {
+                    results.push({ name, promptJson: prompt, ok: false, reason: errors.join("; "), source: "server" });
+                } else {
+                    results.push({ name, promptJson: prompt, ok: true, source: "server" });
+                }
+            }
+        } catch (error) {
+            results.push({ name, promptJson: {}, ok: false, reason: error instanceof Error ? error.message : String(error), source: "server" });
+        }
+    }
+    return results;
+}
+
+/** Import a pasted/uploaded workflow JSON. Auto-detects format; converts graph format using objectInfo. */
+export async function importComfyuiWorkflow(jsonString: string, objectInfo: ComfyuiObjectInfo): Promise<ComfyuiWorkflowSummary> {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(jsonString);
+    } catch {
+        throw new Error(i18n.t("config.comfyui.invalidWorkflowJson"));
+    }
+    const format = detectWorkflowFormat(parsed);
+    if (format === "prompt") return { name: i18n.t("config.comfyui.importedWorkflow"), promptJson: parsed as Record<string, any>, ok: true, source: "import" };
+    const { prompt, errors } = convertGraphToPrompt(parsed as GraphJson, objectInfo);
+    if (errors.length) {
+        // Still usable if conversion produced nodes, but surface the warning via ok=false so the UI can hint.
+        return { name: i18n.t("config.comfyui.importedWorkflow"), promptJson: prompt, ok: false, reason: errors.join("; "), source: "import" };
+    }
+    return { name: i18n.t("config.comfyui.importedWorkflow"), promptJson: prompt, ok: true, source: "import" };
 }
