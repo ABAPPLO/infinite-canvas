@@ -91,7 +91,7 @@ export function ModelSelectModal({
                 const workflows = await fetchComfyuiWorkflows(channel.baseUrl);
                 comfyuiMeta.current = Object.fromEntries(workflows.filter((w) => w.ok).map((w) => [w.name, { promptJson: w.promptJson, source: w.source }]));
                 setComfyuiWorkflows(workflows);
-                setFetched(workflows.map((w) => w.name));
+                setFetched(workflows.filter((w) => w.ok).map((w) => w.name));
                 setActiveTab("new");
                 const ready = workflows.filter((w) => w.ok).length;
                 message.success(t("config.modelSelect.fetched", { count: ready }));

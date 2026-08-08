@@ -291,7 +291,8 @@ export function normalizeChannelModels(models: Array<string | ChannelModel> | un
         seen.add(name);
         const capability = typeof item === "string" ? guessCapability(name) : item.capability || guessCapability(name);
         const script = typeof item === "string" ? undefined : item.script?.trim() || undefined;
-        result.push({ name, capability, script });
+        const comfyui = typeof item === "string" ? undefined : item.comfyui;
+        result.push({ name, capability, script, ...(comfyui ? { comfyui } : {}) });
     }
     return result;
 }

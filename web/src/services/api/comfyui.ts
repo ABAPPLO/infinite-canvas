@@ -310,13 +310,21 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     }
     patchRequiredDefaults(graph);
 
-    const submit = await comfyuiRequest<{ prompt_id?: string; node_errors?: Record<string, unknown>; error?: string }>(
-        target,
-        "post",
-        "/prompt",
-        { prompt: graph, client_id: COMFYUI_CLIENT_ID },
-        signal,
-    );
+    let submit: { prompt_id?: string; node_errors?: Record<string, unknown>; error?: string };
+    try {
+        submit = await comfyuiRequest<{ prompt_id?: string; node_errors?: Record<string, unknown>; error?: string }>(
+            target,
+            "post",
+            "/prompt",
+            { prompt: graph, client_id: COMFYUI_CLIENT_ID },
+            signal,
+        );
+    } catch (err) {
+        const data = (err as { response?: { data?: unknown } })?.response?.data;
+        if (data === undefined) throw err; // abort / network — propagate unchanged
+        const detail = typeof data === "string" ? data : JSON.stringify(data);
+        throw new Error(`${i18n.t("config.comfyui.submitFailed")}: ${detail}`);
+    }
     if (!submit.prompt_id) {
         const detail = submit.node_errors ? JSON.stringify(submit.node_errors) : submit.error;
         throw new Error(detail ? `${i18n.t("config.comfyui.submitFailed")}: ${detail}` : i18n.t("config.comfyui.submitFailed"));
