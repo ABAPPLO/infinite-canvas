@@ -1,7 +1,8 @@
 import axios from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { buildApiUrl, resolveChannelModelEntry, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { runComfyui } from "@/services/api/comfyui";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
@@ -736,6 +737,16 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
     }
+    if (requestConfig.apiFormat === "comfyui") {
+        const entry = resolveChannelModelEntry(config, config.model || config.imageModel);
+        if (!entry?.model.comfyui) throw new Error(apiText("requestFailed"));
+        try {
+            const dataUrls = await runComfyui({ target: requestConfig.baseUrl, meta: entry.model.comfyui, prompt: withSystemPrompt(requestConfig, prompt), signal: options?.signal });
+            return dataUrls.map((dataUrl) => ({ id: nanoid(), dataUrl }));
+        } catch (error) {
+            throw new Error(readAxiosError(error, apiText("requestFailed")));
+        }
+    }
     if (requestConfig.apiFormat === "gemini") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, options);
@@ -792,6 +803,17 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
                 signal: options?.signal,
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
+        } catch (error) {
+            throw new Error(readAxiosError(error, apiText("requestFailed")));
+        }
+    }
+    if (requestConfig.apiFormat === "comfyui") {
+        const entry = resolveChannelModelEntry(config, config.model || config.imageModel);
+        if (!entry?.model.comfyui) throw new Error(apiText("requestFailed"));
+        const referenceDataUrl = references.length ? await imageToDataUrl(references[0]) : undefined;
+        try {
+            const dataUrls = await runComfyui({ target: requestConfig.baseUrl, meta: entry.model.comfyui, prompt: withSystemPrompt(requestConfig, requestPrompt), referenceDataUrl, signal: options?.signal });
+            return dataUrls.map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
