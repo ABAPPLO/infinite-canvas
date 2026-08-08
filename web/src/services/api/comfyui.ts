@@ -224,3 +224,117 @@ export async function importComfyuiWorkflow(jsonString: string, objectInfo: Comf
     }
     return { name: i18n.t("config.comfyui.importedWorkflow"), promptJson: prompt, ok: true, source: "import" };
 }
+
+type ComfyuiOutputImage = { filename: string; subfolder?: string; type?: string };
+
+/** Upload a reference image (data URL) to ComfyUI and return the upload response {name, subfolder, type}. */
+async function uploadImage(target: string, dataUrl: string, signal?: AbortSignal): Promise<{ name: string; subfolder: string; type: string }> {
+    const blob = await (await fetch(dataUrl)).blob();
+    const form = new FormData();
+    form.append("image", blob, "reference.png");
+    const result = await comfyuiRequest<{ name: string; subfolder: string; type: string }>(target, "post", "/upload/image", form, signal);
+    return { name: result.name, subfolder: result.subfolder || "", type: result.type || "input" };
+}
+
+/** Fetch a generated image blob from /view and convert to a data URL. */
+async function fetchView(target: string, image: ComfyuiOutputImage, signal?: AbortSignal): Promise<string> {
+    const params = new URLSearchParams({ filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" });
+    const blob = await comfyuiRequest<Blob>(target, "get", `/view?${params.toString()}`, undefined, signal);
+    return await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error(i18n.t("config.comfyui.viewFailed")));
+        reader.readAsDataURL(blob);
+    });
+}
+
+const COMFYUI_CLIENT_ID = `infinite-canvas-${Math.random().toString(36).slice(2)}`;
+
+function setNodeInput(graph: Record<string, any>, slot: { node: string; input: string } | undefined, value: unknown) {
+    if (!slot) return;
+    const node = graph[slot.node];
+    if (node) node.inputs[slot.input] = value;
+}
+
+// ComfyUI 0.30 made some inputs required (e.g. SaveImage.filename_prefix). Patch known required defaults.
+function patchRequiredDefaults(graph: Record<string, any>) {
+    for (const node of Object.values(graph) as Array<any>) {
+        if (node.class_type === "SaveImage" && node.inputs.filename_prefix === undefined) node.inputs.filename_prefix = "infinite_canvas";
+    }
+}
+
+function sleep(ms: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
+        const timer = setTimeout(resolve, ms);
+        signal?.addEventListener(
+            "abort",
+            () => {
+                clearTimeout(timer);
+                reject(new DOMException("Aborted", "AbortError"));
+            },
+            { once: true },
+        );
+    });
+}
+
+export type RunComfyuiArgs = {
+    target: string;
+    meta: ComfyuiModelMeta;
+    prompt: string;
+    negativePrompt?: string;
+    referenceDataUrl?: string;
+    size?: { width?: number; height?: number };
+    signal?: AbortSignal;
+};
+
+/**
+ * Run a comfyui workflow: inject prompt/reference/seed into the mapped nodes, submit /prompt,
+ * poll /history until the output node is ready, then fetch each result via /view.
+ */
+export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
+    const { target, meta, signal } = args;
+    const io = meta.io;
+    if (!io.promptText) throw new Error(i18n.t("config.comfyui.promptNodeNotConfigured"));
+    if (!io.outputNode) throw new Error(i18n.t("config.comfyui.outputNodeNotConfigured"));
+
+    const graph = JSON.parse(JSON.stringify(meta.promptJson)) as Record<string, any>;
+    setNodeInput(graph, io.promptText, args.prompt);
+    if (io.negativeText && args.negativePrompt !== undefined) setNodeInput(graph, io.negativeText, args.negativePrompt);
+    if (io.seed) setNodeInput(graph, io.seed, Math.floor(Math.random() * 1_000_000_000_000));
+    if (io.width && args.size?.width) setNodeInput(graph, io.width, args.size.width);
+    if (io.height && args.size?.height) setNodeInput(graph, io.height, args.size.height);
+    if (io.referenceImage && args.referenceDataUrl) {
+        const uploaded = await uploadImage(target, args.referenceDataUrl, signal);
+        setNodeInput(graph, io.referenceImage, uploaded.name);
+    }
+    patchRequiredDefaults(graph);
+
+    const submit = await comfyuiRequest<{ prompt_id?: string; node_errors?: Record<string, unknown>; error?: string }>(
+        target,
+        "post",
+        "/prompt",
+        { prompt: graph, client_id: COMFYUI_CLIENT_ID },
+        signal,
+    );
+    if (!submit.prompt_id) {
+        const detail = submit.node_errors ? JSON.stringify(submit.node_errors) : submit.error;
+        throw new Error(detail ? `${i18n.t("config.comfyui.submitFailed")}: ${detail}` : i18n.t("config.comfyui.submitFailed"));
+    }
+    const promptId = submit.prompt_id;
+
+    const deadline = Date.now() + 300_000;
+    for (;;) {
+        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        const history = await comfyuiRequest<Record<string, { outputs?: Record<string, { images?: ComfyuiOutputImage[]; gifs?: ComfyuiOutputImage[] }>; status?: { completed?: boolean } }>>(target, "get", `/history/${promptId}`, undefined, signal);
+        const entry = history[promptId];
+        if (entry?.status?.completed) {
+            const nodeOutput = entry.outputs?.[io.outputNode];
+            const images = nodeOutput?.images || nodeOutput?.gifs || [];
+            if (!images.length) throw new Error(i18n.t("config.comfyui.noOutput"));
+            return Promise.all(images.map((image) => fetchView(target, image, signal)));
+        }
+        if (Date.now() >= deadline) throw new Error(i18n.t("config.comfyui.pollTimeout"));
+        await sleep(1000, signal);
+    }
+}
