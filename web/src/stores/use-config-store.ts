@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 
-export type ApiCallFormat = "openai" | "gemini" | "ark";
+export type ApiCallFormat = "openai" | "gemini" | "ark" | "comfyui";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
 
@@ -13,6 +13,26 @@ export type ChannelModel = {
     name: string;
     capability: ModelCapability;
     script?: string;
+    comfyui?: ComfyuiModelMeta;       // present only for comfyui channels
+};
+
+// An IO injection point: which node, and which input on that node.
+export type ComfyuiIoSlot = { node: string; input: string };
+
+export type ComfyuiIoMapping = {
+    promptText: ComfyuiIoSlot;        // positive prompt, e.g. { node: "<CLIPTextEncode id>", input: "text" }
+    negativeText?: ComfyuiIoSlot;     // optional negative prompt
+    referenceImage?: ComfyuiIoSlot;   // image-to-image source, e.g. { node: "<LoadImage id>", input: "image" }
+    width?: ComfyuiIoSlot;            // e.g. { node: "<EmptyLatentImage id>", input: "width" }
+    height?: ComfyuiIoSlot;
+    seed?: ComfyuiIoSlot;             // e.g. { node: "<KSampler id>", input: "seed" }
+    outputNode: string;               // bare node id to read results from, e.g. "<SaveImage id>"
+};
+
+export type ComfyuiModelMeta = {
+    promptJson: Record<string, any>;  // Prompt/API-format workflow
+    io: Partial<ComfyuiIoMapping>;    // filled by the IO modal; partial until configured
+    source?: "server" | "import";
 };
 
 export type ModelChannel = {
@@ -183,7 +203,9 @@ export function resolveModelScript(config: AiConfig, value: string) {
 
 function isAiConfigReady(config: AiConfig, model: string) {
     const channel = resolveModelChannel(config, model);
-    return Boolean(model.trim() && channel.baseUrl.trim() && channel.apiKey.trim());
+    const hasBaseUrl = Boolean(channel.baseUrl.trim());
+    if (channel.apiFormat === "comfyui") return Boolean(model.trim()) && hasBaseUrl;
+    return Boolean(model.trim() && hasBaseUrl && channel.apiKey.trim());
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -345,6 +367,11 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
     };
 }
 
+/** Resolve the channel + ChannelModel (including comfyui meta) for a `channelId::model` value. */
+export function resolveChannelModelEntry(config: AiConfig, value: string): { channel: ModelChannel; model: ChannelModel } | null {
+    return findChannelModel(config, value);
+}
+
 function normalizeChannels(config: AiConfig) {
     const persistedChannels = Array.isArray(config.channels) ? config.channels : [];
     const channels = persistedChannels.map((channel, index) =>
@@ -370,14 +397,17 @@ function normalizeChannels(config: AiConfig) {
     return channels;
 }
 
+const COMFYUI_BASE_URL = "http://localhost:8188";
+
 export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
     if (apiFormat === "gemini") return GEMINI_BASE_URL;
     if (apiFormat === "ark") return ARK_BASE_URL;
+    if (apiFormat === "comfyui") return COMFYUI_BASE_URL;
     return OPENAI_BASE_URL;
 }
 
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
-    return apiFormat === "gemini" || apiFormat === "ark" ? apiFormat : "openai";
+    return apiFormat === "gemini" || apiFormat === "ark" || apiFormat === "comfyui" ? apiFormat : "openai";
 }
 
 function uniqueModelOptions(models: string[]) {
