@@ -105,3 +105,64 @@ export function convertGraphToPrompt(graph: GraphJson, objectInfo: ComfyuiObject
     }
     return { prompt, errors };
 }
+
+export type ComfyuiNodeCandidates = {
+    textInputs: Array<{ id: string; classType: string; input: string }>;   // candidate prompt slots (string-literal inputs)
+    referenceImages: Array<{ id: string; input: string }>;                 // LoadImage nodes
+    width: Array<{ id: string; input: string }>;
+    height: Array<{ id: string; input: string }>;
+    seed: Array<{ id: string; input: string }>;
+    outputs: Array<{ id: string; classType: string; capability: "image" | "video" | "audio" }>;
+};
+
+const IMAGE_OUTPUT_TYPES = new Set(["SaveImage", "PreviewImage"]);
+const VIDEO_OUTPUT_TYPES = new Set(["SaveAnimatedPNG", "VHS_VideoCombine", "SaveWEBM"]);
+const AUDIO_OUTPUT_TYPES = new Set(["SaveAudio", "PreviewAudio"]);
+const LATENT_TYPES = new Set(["EmptyLatentImage", "EmptySD3LatentImage", "EmptyHunyuanLatentVideo"]);
+
+function capabilityForOutput(classType: string): "image" | "video" | "audio" | undefined {
+    if (IMAGE_OUTPUT_TYPES.has(classType)) return "image";
+    if (VIDEO_OUTPUT_TYPES.has(classType)) return "video";
+    if (AUDIO_OUTPUT_TYPES.has(classType)) return "audio";
+    return undefined;
+}
+
+/** Extract IO candidates from a prompt-format workflow and suggest a default mapping. */
+export function parseComfyuiPromptNodes(promptJson: Record<string, { class_type: string; inputs: Record<string, unknown> }>): { candidates: ComfyuiNodeCandidates; defaults: Partial<ComfyuiIoMapping> } {
+    const candidates: ComfyuiNodeCandidates = { textInputs: [], referenceImages: [], width: [], height: [], seed: [], outputs: [] };
+    const textById: Record<string, { id: string; classType: string; input: string }> = {};
+
+    for (const [id, node] of Object.entries(promptJson)) {
+        const classType = node.class_type;
+        const inputs = node.inputs || {};
+        // String-literal inputs are prompt candidates (CLIPTextEncode.text is the common case).
+        for (const [input, value] of Object.entries(inputs)) {
+            if (typeof value === "string") {
+                const entry = { id, classType, input };
+                candidates.textInputs.push(entry);
+                if (input === "text") textById[id] = entry;
+            }
+        }
+        if (classType === "LoadImage") candidates.referenceImages.push({ id, input: "image" });
+        if (LATENT_TYPES.has(classType)) {
+            if ("width" in inputs) candidates.width.push({ id, input: "width" });
+            if ("height" in inputs) candidates.height.push({ id, input: "height" });
+        }
+        if (classType === "KSampler" || classType === "KSamplerAdvanced") {
+            if ("seed" in inputs) candidates.seed.push({ id, input: "seed" });
+        }
+        const capability = capabilityForOutput(classType);
+        if (capability) candidates.outputs.push({ id, classType, capability });
+    }
+
+    // Defaults: first CLIPTextEncode-style text node; first latent size; first seed; first image output.
+    const positive = Object.values(textById)[0] || candidates.textInputs[0];
+    const defaults: Partial<ComfyuiIoMapping> = {};
+    if (positive) defaults.promptText = { node: positive.id, input: positive.input };
+    if (candidates.width.length) defaults.width = { node: candidates.width[0].id, input: candidates.width[0].input };
+    if (candidates.height.length) defaults.height = { node: candidates.height[0].id, input: candidates.height[0].input };
+    if (candidates.seed.length) defaults.seed = { node: candidates.seed[0].id, input: candidates.seed[0].input };
+    const firstImageOutput = candidates.outputs.find((o) => o.capability === "image");
+    if (firstImageOutput) defaults.outputNode = firstImageOutput.id;
+    return { candidates, defaults };
+}
