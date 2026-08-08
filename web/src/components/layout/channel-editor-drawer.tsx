@@ -3,7 +3,8 @@ import { ListPlus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { defaultBaseUrlForApiFormat, guessCapability, normalizeChannelModels, type ApiCallFormat, type ChannelModel, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { defaultBaseUrlForApiFormat, guessCapability, normalizeChannelModels, type ApiCallFormat, type ChannelModel, type ComfyuiIoMapping, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { ComfyuiIoModal } from "./comfyui-io-modal";
 import { ModelScriptEditor } from "./model-script-editor";
 import { ModelSelectModal } from "./model-select-modal";
 
@@ -14,10 +15,12 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const [draft, setDraft] = useState<ModelChannel | null>(channel);
     const [selectOpen, setSelectOpen] = useState(false);
     const [scriptTarget, setScriptTarget] = useState<ScriptTarget | null>(null);
+    const [ioTarget, setIoTarget] = useState<{ name: string; capability: ModelCapability } | null>(null);
     const apiFormatOptions: Array<{ label: string; value: ApiCallFormat }> = [
         { label: "OpenAI", value: "openai" },
         { label: "Gemini", value: "gemini" },
         { label: t("config.protocols.ark"), value: "ark" },
+        { label: t("config.protocols.comfyui"), value: "comfyui" },
     ];
     const capabilityOptions: Array<{ label: string; value: ModelCapability }> = ["image", "video", "text", "audio"].map((value) => ({ label: t(`config.channelEditor.capabilities.${value}`), value: value as ModelCapability }));
 
@@ -27,6 +30,8 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
 
     if (!draft) return null;
 
+    const isComfyui = draft.apiFormat === "comfyui";
+
     const patch = (value: Partial<ModelChannel>) => setDraft((current) => (current ? { ...current, ...value } : current));
     const setModels = (models: ChannelModel[]) => patch({ models });
 
@@ -35,13 +40,22 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
         patch({ apiFormat, baseUrl });
     };
 
-    const applySelection = (names: string[]) => {
+    const applySelection = (names: string[], metas?: Record<string, { promptJson: Record<string, any>; source?: "server" | "import" }>) => {
         const map = new Map(draft.models.map((model) => [model.name, model]));
-        setModels(names.map((name) => map.get(name) || { name, capability: guessCapability(name) }));
+        setModels(
+            names.map((name) => {
+                const existing = map.get(name);
+                if (existing) return existing;
+                const meta = metas?.[name];
+                if (isComfyui && meta) return { name, capability: guessCapability(name), comfyui: { promptJson: meta.promptJson, io: {}, source: meta.source } };
+                return { name, capability: guessCapability(name) };
+            }),
+        );
     };
 
     const setCapability = (name: string, capability: ModelCapability) => setModels(draft.models.map((model) => (model.name === name ? { ...model, capability } : model)));
     const setScript = (name: string, script: string) => setModels(draft.models.map((model) => (model.name === name ? { ...model, script: script || undefined } : model)));
+    const setComfyuiIo = (name: string, io: ComfyuiIoMapping) => setModels(draft.models.map((model) => (model.name === name ? { ...model, comfyui: { ...(model.comfyui || { promptJson: {}, io: {} }), io } } : model)));
     const removeModel = (name: string) => setModels(draft.models.filter((model) => model.name !== name));
 
     const save = () => {
@@ -78,10 +92,12 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <span className="mb-1 block text-sm font-medium">{t("config.channelEditor.baseUrl")}</span>
                     <Input value={draft.baseUrl} onChange={(event) => patch({ baseUrl: event.target.value })} placeholder="https://api.example.com" />
                 </label>
-                <label className="block md:col-span-2">
-                    <span className="mb-1 block text-sm font-medium">API Key</span>
-                    <Input.Password value={draft.apiKey} onChange={(event) => patch({ apiKey: event.target.value })} placeholder="sk-..." />
-                </label>
+                {!isComfyui && (
+                    <label className="block md:col-span-2">
+                        <span className="mb-1 block text-sm font-medium">API Key</span>
+                        <Input.Password value={draft.apiKey} onChange={(event) => patch({ apiKey: event.target.value })} placeholder="sk-..." />
+                    </label>
+                )}
             </div>
 
             <div className="mt-6 mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -103,9 +119,20 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                             </span>
                             <div className="flex shrink-0 items-center gap-2">
                                 <Segmented size="small" value={model.capability} options={capabilityOptions} onChange={(value) => setCapability(model.name, value as ModelCapability)} />
-                                <Button size="small" type={model.script ? "primary" : "default"} ghost={Boolean(model.script)} onClick={() => setScriptTarget({ name: model.name, capability: model.capability, value: model.script || "" })}>
-                                    {t(model.script ? "config.channelEditor.scriptReady" : "config.channelEditor.script")}
-                                </Button>
+                                {isComfyui ? (
+                                    <Button
+                                        size="small"
+                                        type={model.comfyui?.io?.outputNode ? "primary" : "default"}
+                                        ghost={Boolean(model.comfyui?.io?.outputNode)}
+                                        onClick={() => setIoTarget({ name: model.name, capability: model.capability })}
+                                    >
+                                        {t(model.comfyui?.io?.outputNode ? "config.channelEditor.ioNodesReady" : "config.channelEditor.ioNodes")}
+                                    </Button>
+                                ) : (
+                                    <Button size="small" type={model.script ? "primary" : "default"} ghost={Boolean(model.script)} onClick={() => setScriptTarget({ name: model.name, capability: model.capability, value: model.script || "" })}>
+                                        {t(model.script ? "config.channelEditor.scriptReady" : "config.channelEditor.script")}
+                                    </Button>
+                                )}
                                 <Button size="small" danger type="text" icon={<Trash2 className="size-3.5" />} onClick={() => removeModel(model.name)} />
                             </div>
                         </div>
@@ -115,7 +142,14 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                 )}
             </div>
 
-            <ModelSelectModal open={selectOpen} channel={draft} selectedNames={draft.models.map((model) => model.name)} onConfirm={applySelection} onClose={() => setSelectOpen(false)} />
+            <ModelSelectModal
+                open={selectOpen}
+                channel={draft}
+                selectedNames={draft.models.map((model) => model.name)}
+                onConfirm={applySelection}
+                onConfirmComfyui={(names, metas) => applySelection(names, metas)}
+                onClose={() => setSelectOpen(false)}
+            />
 
             <ModelScriptEditor
                 open={Boolean(scriptTarget)}
@@ -125,6 +159,20 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                 onSave={(script) => scriptTarget && setScript(scriptTarget.name, script)}
                 onClose={() => setScriptTarget(null)}
             />
+
+            {ioTarget && (
+                <ComfyuiIoModal
+                    open={Boolean(ioTarget)}
+                    promptJson={draft.models.find((m) => m.name === ioTarget.name)?.comfyui?.promptJson || {}}
+                    capability={ioTarget.capability}
+                    initial={draft.models.find((m) => m.name === ioTarget.name)?.comfyui?.io || {}}
+                    onSave={(mapping) => {
+                        setComfyuiIo(ioTarget.name, mapping);
+                        setIoTarget(null);
+                    }}
+                    onClose={() => setIoTarget(null)}
+                />
+            )}
         </Drawer>
     );
 }
