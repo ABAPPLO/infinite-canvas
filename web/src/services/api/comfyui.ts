@@ -375,6 +375,15 @@ function patchRequiredDefaults(graph: Record<string, any>) {
     }
 }
 
+/** Whether a node input is optional per object_info (in the optional group, not required). Unknown inputs
+ *  are treated as required (conservative) so we never unwire something a node needs to run. */
+function isOptionalInput(objectInfo: ComfyuiObjectInfo, classType: string, inputName: string): boolean {
+    const def = objectInfo[classType]?.input;
+    if (!def) return false;
+    if (inputName in (def.required || {})) return false;
+    return inputName in (def.optional || {});
+}
+
 /** Keep only nodes reachable (reverse-traversing connection values) from the output node. Workflows can
  *  carry spurious disconnected branches — e.g. an ImageScale node whose required `image` input is left
  *  unwired — whose missing required inputs would fail ComfyUI validation even though nothing on the path
@@ -441,14 +450,29 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     if (io.seed) setNodeInput(graph, io.seed, Math.floor(Math.random() * 1_000_000_000_000));
     if (io.width && args.size?.width) setNodeInput(graph, io.width, args.size.width);
     if (io.height && args.size?.height) setNodeInput(graph, io.height, args.size.height);
-    // Positional multi-reference: ref[i] → referenceImages[i]. Extras clamped; missing slots keep the
-    // workflow's own value.
+    // Positional multi-reference: ref[i] → referenceImages[i]. Extras clamped.
     const refSlots = io.referenceImages ?? [];
     const refs = args.references ?? [];
     for (let i = 0; i < refSlots.length; i++) {
         if (i >= refs.length) break;
         const uploaded = await uploadImage(target, refs[i], signal);
         setNodeInput(graph, refSlots[i], uploaded.name);
+    }
+    // Reference loaders the user didn't supply must not leak the workflow's saved default image. Unwire
+    // their consumers where the input is optional (per object_info); pruneToOutput below then drops the
+    // now-orphaned loader. Required inputs keep the loader + default so the graph stays valid. Only
+    // io.referenceImages slots are touched — other image nodes in the workflow are left alone.
+    const unusedLoaders = new Set(refSlots.slice(refs.length).map((slot) => slot.node));
+    if (unusedLoaders.size) {
+        const objectInfo = await getObjectInfo(target, signal);
+        for (const node of Object.values(graph) as Array<any>) {
+            if (typeof node.class_type !== "string") continue;
+            for (const [name, value] of Object.entries(node.inputs || {})) {
+                if (Array.isArray(value) && unusedLoaders.has(String(value[0])) && isOptionalInput(objectInfo, node.class_type, name)) {
+                    delete node.inputs[name];
+                }
+            }
+        }
     }
     patchRequiredDefaults(graph);
     const submitGraph = pruneToOutput(graph, io.outputNode);
