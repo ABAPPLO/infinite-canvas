@@ -6,7 +6,8 @@ import { dataUrlToFile } from "@/lib/image-utils";
 import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
-import { buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
+import { buildApiUrl, modelOptionName, resolveChannelModelEntry, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
+import { runComfyui } from "./comfyui";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -27,7 +28,7 @@ type RequestOptions = { signal?: AbortSignal };
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
-export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "plugin"; model: string };
+export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "plugin" | "comfyui"; model: string };
 export type VideoGenerationTaskState = { status: "pending" } | { status: "completed"; result: VideoGenerationResult } | { status: "failed"; error: string };
 
 /** Results for scripted (plugin) video models, which run their own create+poll in one shot at task creation. */
@@ -63,6 +64,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
     const script = resolveModelScript(config, selectedModel);
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
+    if (requestConfig.apiFormat === "comfyui") return createComfyuiVideoTask(requestConfig, selectedModel, prompt, references, options);
     assertVideoConfig(requestConfig, requestConfig.model);
     if (isSeedanceVideoConfig(requestConfig)) {
         return createSeedanceTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
@@ -74,7 +76,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
 }
 
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
-    if (task.provider === "plugin") {
+    if (task.provider === "plugin" || task.provider === "comfyui") {
         const result = pluginVideoResults.get(task.id);
         return result ? { status: "completed", result } : { status: "failed", error: apiText("pluginVideoExpired") };
     }
@@ -132,6 +134,21 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
         }
     }
     throw new Error(apiText("noPlayableVideo"));
+}
+
+/** ComfyUI video workflows run to completion synchronously via runComfyui (it polls /history internally),
+ *  so the result is ready at task creation — stashed in the sync-result map and surfaced on first poll. */
+async function createComfyuiVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {
+    const entry = resolveChannelModelEntry(config, model);
+    if (!entry?.model.comfyui) throw new Error(apiText("videoTaskCreateFailed"));
+    const referenceDataUrls = await Promise.all(references.map((image) => imageToDataUrl(image)));
+    const dataUrls = await runComfyui({ target: config.baseUrl, meta: entry.model.comfyui, prompt, references: referenceDataUrls, signal: options?.signal });
+    const first = dataUrls[0];
+    if (!first) throw new Error(apiText("noPlayableVideo"));
+    const blob = await (await fetch(first)).blob();
+    const id = nanoid();
+    pluginVideoResults.set(id, { blob, mimeType: blob.type || "video/mp4" });
+    return { id, provider: "comfyui", model };
 }
 
 async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {
@@ -203,7 +220,8 @@ async function pollSeedanceTask(config: AiConfig, task: VideoGenerationTask, opt
         const url = videoResultUrl(state);
         if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };
         if (state.status === "succeeded" || state.status === "completed") return { status: "failed", error: apiText("seedanceNoVideoUrl") };
-        if (state.status === "failed" || state.status === "cancelled" || state.status === "expired") return { status: "failed", error: readApiErrorMessage(state.error?.message) || apiText(state.status === "expired" ? "seedanceVideoTimeout" : "seedanceVideoFailed") };
+        if (state.status === "failed" || state.status === "cancelled" || state.status === "expired")
+            return { status: "failed", error: readApiErrorMessage(state.error?.message) || apiText(state.status === "expired" ? "seedanceVideoTimeout" : "seedanceVideoFailed") };
         return { status: "pending" };
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("seedanceTaskQueryFailed")));
@@ -353,17 +371,8 @@ function readApiErrorMessage(value: unknown): string {
     if (typeof value !== "object") return "";
     const payload = value as { msg?: unknown; message?: unknown; error?: unknown; detail?: unknown };
     // error may be a string or an object containing a message.
-    const errorMsg =
-        typeof payload.error === "string"
-            ? payload.error
-            : (payload.error as { message?: unknown })?.message;
-    return (
-        readApiErrorMessage(payload.msg) ||
-        readApiErrorMessage(payload.message) ||
-        readApiErrorMessage(errorMsg) ||
-        readApiErrorMessage(payload.detail) ||
-        ""
-    );
+    const errorMsg = typeof payload.error === "string" ? payload.error : (payload.error as { message?: unknown })?.message;
+    return readApiErrorMessage(payload.msg) || readApiErrorMessage(payload.message) || readApiErrorMessage(errorMsg) || readApiErrorMessage(payload.detail) || "";
 }
 
 function readAxiosError(error: unknown, fallback: string) {

@@ -120,12 +120,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                             <div className="flex shrink-0 items-center gap-2">
                                 <Segmented size="small" value={model.capability} options={capabilityOptions} onChange={(value) => setCapability(model.name, value as ModelCapability)} />
                                 {isComfyui ? (
-                                    <Button
-                                        size="small"
-                                        type={model.comfyui?.io?.outputNode ? "primary" : "default"}
-                                        ghost={Boolean(model.comfyui?.io?.outputNode)}
-                                        onClick={() => setIoTarget({ name: model.name, capability: model.capability })}
-                                    >
+                                    <Button size="small" type={model.comfyui?.io?.outputNode ? "primary" : "default"} ghost={Boolean(model.comfyui?.io?.outputNode)} onClick={() => setIoTarget({ name: model.name, capability: model.capability })}>
                                         {t(model.comfyui?.io?.outputNode ? "config.channelEditor.ioNodesReady" : "config.channelEditor.ioNodes")}
                                     </Button>
                                 ) : (
@@ -142,14 +137,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                 )}
             </div>
 
-            <ModelSelectModal
-                open={selectOpen}
-                channel={draft}
-                selectedNames={draft.models.map((model) => model.name)}
-                onConfirm={applySelection}
-                onConfirmComfyui={(names, metas) => applySelection(names, metas)}
-                onClose={() => setSelectOpen(false)}
-            />
+            <ModelSelectModal open={selectOpen} channel={draft} selectedNames={draft.models.map((model) => model.name)} onConfirm={applySelection} onConfirmComfyui={(names, metas) => applySelection(names, metas)} onClose={() => setSelectOpen(false)} />
 
             <ModelScriptEditor
                 open={Boolean(scriptTarget)}

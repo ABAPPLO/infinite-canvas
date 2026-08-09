@@ -97,6 +97,10 @@ export function convertGraphToPrompt(graph: GraphJson, objectInfo: ComfyuiObject
         }
         const inputs: Record<string, unknown> = {};
         const connectedNames = new Set<string>();
+        // Variadic/autogrow inputs (e.g. rgthree COMFY_AUTOGROW) are wired as dotted variants — the
+        // object_info base name "values" is connected as "values.a". Track those bases so the base name
+        // is treated as a connection, not a widget (avoids a false widget-count mismatch).
+        const autogrowBases = new Set<string>();
 
         // Connection inputs: resolve each wired slot to [originNodeId, originSlot].
         for (const slot of node.inputs || []) {
@@ -105,17 +109,19 @@ export function convertGraphToPrompt(graph: GraphJson, objectInfo: ComfyuiObject
             if (origin) {
                 inputs[slot.name] = [String(origin[0]), origin[1]];
                 connectedNames.add(slot.name);
+                if (slot.name.includes(".")) autogrowBases.add(slot.name.split(".")[0]);
             }
         }
 
         // Widget inputs: object_info inputs whose type is a widget primitive/combo, in order, excluding
-        // any wired as a connection. ComfyUI also lists unwired widgets in node.inputs (link: null), so
-        // presence there does NOT mean "slot" — the object_info type does.
+        // any wired as a connection or a variadic base. ComfyUI also lists unwired widgets in node.inputs
+        // (link: null), so presence there does NOT mean "slot" — the object_info type does.
         const widgetInputs: string[] = [];
         for (const group of [def.input?.required, def.input?.optional]) {
             if (!group) continue;
             for (const [name, spec] of Object.entries(group)) {
-                if (!connectedNames.has(name) && isWidgetInput(spec, linkableTypes)) widgetInputs.push(name);
+                if (connectedNames.has(name) || autogrowBases.has(name)) continue; // wired slot or variadic base
+                if (isWidgetInput(spec, linkableTypes)) widgetInputs.push(name);
             }
         }
         const widgetValues = Array.isArray(node.widgets_values) ? node.widgets_values : [];
@@ -369,6 +375,31 @@ function patchRequiredDefaults(graph: Record<string, any>) {
     }
 }
 
+/** Keep only nodes reachable (reverse-traversing connection values) from the output node. Workflows can
+ *  carry spurious disconnected branches — e.g. an ImageScale node whose required `image` input is left
+ *  unwired — whose missing required inputs would fail ComfyUI validation even though nothing on the path
+ *  to the output depends on them. If the output node is absent, return the graph unchanged. */
+function pruneToOutput(graph: Record<string, any>, outputNode: string): Record<string, any> {
+    if (!graph[outputNode]) return graph;
+    const keep = new Set<string>();
+    const stack = [outputNode];
+    while (stack.length) {
+        const id = stack.pop() as string;
+        if (keep.has(id)) continue;
+        keep.add(id);
+        const node = graph[id];
+        if (!node) continue;
+        for (const value of Object.values<any>(node.inputs || {})) {
+            if (Array.isArray(value) && typeof value[0] === "string" && typeof value[1] === "number" && graph[value[0]]) {
+                stack.push(value[0]);
+            }
+        }
+    }
+    const pruned: Record<string, any> = {};
+    for (const [id, node] of Object.entries(graph)) if (keep.has(id)) pruned[id] = node;
+    return pruned;
+}
+
 function sleep(ms: number, signal?: AbortSignal) {
     return new Promise<void>((resolve, reject) => {
         if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
@@ -420,10 +451,11 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
         setNodeInput(graph, refSlots[i], uploaded.name);
     }
     patchRequiredDefaults(graph);
+    const submitGraph = pruneToOutput(graph, io.outputNode);
 
     let submit: { prompt_id?: string; node_errors?: Record<string, unknown>; error?: string };
     try {
-        submit = await comfyuiRequest<{ prompt_id?: string; node_errors?: Record<string, unknown>; error?: string }>(target, "post", "/prompt", { prompt: graph, client_id: COMFYUI_CLIENT_ID }, signal);
+        submit = await comfyuiRequest<{ prompt_id?: string; node_errors?: Record<string, unknown>; error?: string }>(target, "post", "/prompt", { prompt: submitGraph, client_id: COMFYUI_CLIENT_ID }, signal);
     } catch (err) {
         const data = (err as { response?: { data?: unknown } })?.response?.data;
         if (data === undefined) throw err; // abort / network — propagate unchanged

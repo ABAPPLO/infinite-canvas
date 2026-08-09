@@ -3,6 +3,9 @@
 ## Unreleased
 
 + [修复] ComfyUI graph 格式工作流转换丢失 widget 输入（seed/steps/cfg/clip_name/vae_name 等），导致提交报「required input missing」：改为按 object_info 类型判定 widget（基础类型/combo/非连接类型），并在 seed 后跳过 control_after_generate，自定义节点的非标准 combo 类型也能正确识别。
++ [修复] ComfyUI 转换把 rgthree 等可变长连接输入（如 ComfyMathExpression 的 values，类型 COMFY_AUTOGROW）误判为控件，导致含表达式节点的工作流（minimaxh3）转换失败、IO 面板找不到提示词输入：改为按 `name.*` 接线变体识别可变长基名并视为连接槽。
++ [修复] ComfyUI 工作流里未连通的游离节点（如缺必填 image 输入的 ImageScale 死分支）会被原样提交导致校验失败：提交前按输出节点反向剪枝，仅保留实际产出所需的节点。
++ [新增] 视频生成支持 ComfyUI 工作流：minimaxh3 等文+图生视频工作流可在画布端到端出片（文本与首/尾帧注入、SaveVideo 结果读取、视频节点展示）。
 
 + [新增] ComfyUI 工作流支持多张参考图，按顺序位置映射到多个 LoadImage 槽位，超出槽位截断、不足留空，旧的单图模型自动迁移为多图。
 + [优化] ComfyUI 输入输出节点面板支持手动指定任意节点/输入作为提示词、参考图与输出，不再仅依赖自动识别；参考图区块始终显示，下拉框支持搜索。

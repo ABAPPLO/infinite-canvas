@@ -56,7 +56,7 @@ export function ComfyuiIoModal({ open, target, promptJson, capability, initial, 
         setValue((prev) => ({
             ...prev,
             promptText: prev.promptText?.node ? prev.promptText : (inventory.defaults.promptText ?? prev.promptText),
-            referenceImages: prev.referenceImages?.length ? prev.referenceImages : inventory.defaults.referenceImages ?? [],
+            referenceImages: prev.referenceImages?.length ? prev.referenceImages : (inventory.defaults.referenceImages ?? []),
             outputNode: prev.outputNode || inventory.defaults.outputNode || "",
         }));
     }, [inventory]);
@@ -77,10 +77,8 @@ export function ComfyuiIoModal({ open, target, promptJson, capability, initial, 
             [list[index], list[to]] = [list[to], list[index]];
             return { ...prev, referenceImages: list };
         });
-    const removeReference = (index: number) =>
-        setValue((prev) => ({ ...prev, referenceImages: (prev.referenceImages ?? []).filter((_, i) => i !== index) }));
-    const addReference = (slot: { node: string; input: string }) =>
-        setValue((prev) => ({ ...prev, referenceImages: [...(prev.referenceImages ?? []), slot] }));
+    const removeReference = (index: number) => setValue((prev) => ({ ...prev, referenceImages: (prev.referenceImages ?? []).filter((_, i) => i !== index) }));
+    const addReference = (slot: { node: string; input: string }) => setValue((prev) => ({ ...prev, referenceImages: [...(prev.referenceImages ?? []), slot] }));
 
     const decodeSlot = (encoded: string) => {
         const [node, input] = encoded.split("::");
