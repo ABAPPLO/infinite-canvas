@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [修复] ComfyUI graph 格式工作流转换丢失 widget 输入（seed/steps/cfg/clip_name/vae_name 等），导致提交报「required input missing」：改为按 object_info 类型判定 widget（基础类型/combo/非连接类型），并在 seed 后跳过 control_after_generate，自定义节点的非标准 combo 类型也能正确识别。
+
 + [新增] ComfyUI 工作流支持多张参考图，按顺序位置映射到多个 LoadImage 槽位，超出槽位截断、不足留空，旧的单图模型自动迁移为多图。
 + [优化] ComfyUI 输入输出节点面板支持手动指定任意节点/输入作为提示词、参考图与输出，不再仅依赖自动识别；参考图区块始终显示，下拉框支持搜索。
 + [优化] ComfyUI 输入输出节点面板按 object_info 类型分类发现节点：STRING 输入作为提示词候选（含自定义编码器 prompt 槽）、LoadImage 作为参考图槽、Save/Preview 节点按 image/video/audio 类型作为输出；结果读取支持视频等任意输出键。

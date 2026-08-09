@@ -52,16 +52,19 @@ type GraphJson = { nodes?: GraphNode[]; links?: Array<[number, number, number, n
 /** Frontend-only annotation nodes — never executed and never wired into the graph; ComfyUI omits them at submit. */
 const ANNOTATION_NODE_TYPES = new Set(["Note", "MarkdownNote"]);
 
-/** Names of widget (non-connection) inputs for a node type, in object_info order (required then optional). */
-function widgetInputNames(def: ComfyuiObjectInfo[string] | undefined, slotNames: Set<string>): string[] {
-    const names: string[] = [];
-    for (const group of [def?.input?.required, def?.input?.optional]) {
-        if (!group) continue;
-        for (const name of Object.keys(group)) {
-            if (!slotNames.has(name)) names.push(name); // slots are connection inputs; the rest are widgets
-        }
-    }
-    return names;
+/** ComfyUI inserts a control_after_generate dropdown right after any "seed" widget; its value is not
+ *  an object_info input, so it must be skipped when mapping widgets_values positionally. */
+const CONTROL_AFTER_GENERATE = new Set(["fixed", "increment", "decrement", "randomize"]);
+
+/** An object_info input is a widget (not a connection slot) when its type is a primitive
+ *  (INT/FLOAT/STRING/BOOLEAN), a combo (spec[0] is a list of allowed values), or a non-standard type
+ *  name that no node outputs — custom nodes sometimes type a combo with their own name, so anything
+ *  that isn't a known linkable (output) type is an unwired widget. Typed inputs like
+ *  MODEL/CLIP/IMAGE/LATENT/CONDITIONING are connection slots (they appear as node outputs). */
+function isWidgetInput(spec: unknown[] | undefined, linkableTypes: Set<string>): boolean {
+    const t = Array.isArray(spec) ? spec[0] : undefined;
+    if (Array.isArray(t) || t === "INT" || t === "FLOAT" || t === "STRING" || t === "BOOLEAN") return true;
+    return typeof t === "string" && !linkableTypes.has(t);
 }
 
 export type ConvertResult = { prompt: Record<string, { class_type: string; inputs: Record<string, unknown> }>; errors: string[] };
@@ -74,6 +77,11 @@ export type ConvertResult = { prompt: Record<string, { class_type: string; input
 export function convertGraphToPrompt(graph: GraphJson, objectInfo: ComfyuiObjectInfo): ConvertResult {
     const linkMap = new Map<number, [number, number]>();
     for (const link of graph.links || []) linkMap.set(link[0], [link[1], link[2]]); // linkId -> [originNodeId, originSlot]
+
+    // Every type some node outputs is a linkable connection type; used to tell custom-node combo widgets
+    // (non-standard type names) apart from real connection slots.
+    const linkableTypes = new Set<string>();
+    for (const def of Object.values(objectInfo)) for (const t of def.output || []) linkableTypes.add(t);
 
     const prompt: ConvertResult["prompt"] = {};
     const errors: string[] = [];
@@ -88,24 +96,39 @@ export function convertGraphToPrompt(graph: GraphJson, objectInfo: ComfyuiObject
             continue;
         }
         const inputs: Record<string, unknown> = {};
-        const slotNames = new Set((node.inputs || []).map((slot) => slot.name));
+        const connectedNames = new Set<string>();
 
         // Connection inputs: resolve each wired slot to [originNodeId, originSlot].
         for (const slot of node.inputs || []) {
             if (slot.link == null) continue;
             const origin = linkMap.get(slot.link);
-            if (origin) inputs[slot.name] = [String(origin[0]), origin[1]];
+            if (origin) {
+                inputs[slot.name] = [String(origin[0]), origin[1]];
+                connectedNames.add(slot.name);
+            }
         }
 
-        // Widget inputs: map widgets_values positionally onto widget input names (object_info order).
-        const widgetNames = widgetInputNames(def, slotNames);
+        // Widget inputs: object_info inputs whose type is a widget primitive/combo, in order, excluding
+        // any wired as a connection. ComfyUI also lists unwired widgets in node.inputs (link: null), so
+        // presence there does NOT mean "slot" — the object_info type does.
+        const widgetInputs: string[] = [];
+        for (const group of [def.input?.required, def.input?.optional]) {
+            if (!group) continue;
+            for (const [name, spec] of Object.entries(group)) {
+                if (!connectedNames.has(name) && isWidgetInput(spec, linkableTypes)) widgetInputs.push(name);
+            }
+        }
         const widgetValues = Array.isArray(node.widgets_values) ? node.widgets_values : [];
-        if (widgetValues.length < widgetNames.length) {
+        if (widgetValues.length < widgetInputs.length) {
             errors.push(i18n.t("config.comfyui.widgetCountMismatch", { id: node.id, type: node.type }));
         }
-        widgetNames.forEach((name, index) => {
-            if (index < widgetValues.length && !(name in inputs)) inputs[name] = widgetValues[index];
-        });
+        for (let vi = 0, wi = 0; wi < widgetInputs.length && vi < widgetValues.length; wi++) {
+            const name = widgetInputs[wi];
+            if (!(name in inputs)) inputs[name] = widgetValues[vi];
+            vi++;
+            // Skip the control_after_generate value ComfyUI inserts right after a seed widget.
+            if (name === "seed" && vi < widgetValues.length && CONTROL_AFTER_GENERATE.has(widgetValues[vi] as string)) vi++;
+        }
 
         prompt[String(node.id)] = { class_type: node.type, inputs };
     }
