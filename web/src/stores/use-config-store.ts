@@ -22,7 +22,8 @@ export type ComfyuiIoSlot = { node: string; input: string };
 export type ComfyuiIoMapping = {
     promptText: ComfyuiIoSlot;        // positive prompt, e.g. { node: "<CLIPTextEncode id>", input: "text" }
     negativeText?: ComfyuiIoSlot;     // optional negative prompt
-    referenceImage?: ComfyuiIoSlot;   // image-to-image source, e.g. { node: "<LoadImage id>", input: "image" }
+    referenceImage?: ComfyuiIoSlot;   // [legacy] image-to-image source — migrated to referenceImages[0]; removed in Task 4
+    referenceImages?: ComfyuiIoSlot[]; // ordered image-to-image sources: ref[i] → LoadImage slot i
     width?: ComfyuiIoSlot;            // e.g. { node: "<EmptyLatentImage id>", input: "width" }
     height?: ComfyuiIoSlot;
     seed?: ComfyuiIoSlot;             // e.g. { node: "<KSampler id>", input: "seed" }
@@ -281,6 +282,13 @@ export function useEffectiveConfig() {
     return useMemo(() => ({ ...config, channelMode: "local" as const }), [config]);
 }
 
+// Migrate legacy single referenceImage → ordered referenceImages[]. No-op once a model already has referenceImages.
+function migrateComfyuiMeta(meta: ComfyuiModelMeta): ComfyuiModelMeta {
+    const io = meta.io;
+    if (io.referenceImages || !io.referenceImage) return meta;
+    return { ...meta, io: { ...io, referenceImages: [io.referenceImage] } };
+}
+
 /** Normalize a mixed list of raw model names or model objects into deduped ChannelModel entries. */
 export function normalizeChannelModels(models: Array<string | ChannelModel> | undefined): ChannelModel[] {
     const seen = new Set<string>();
@@ -291,7 +299,8 @@ export function normalizeChannelModels(models: Array<string | ChannelModel> | un
         seen.add(name);
         const capability = typeof item === "string" ? guessCapability(name) : item.capability || guessCapability(name);
         const script = typeof item === "string" ? undefined : item.script?.trim() || undefined;
-        const comfyui = typeof item === "string" ? undefined : item.comfyui;
+        const rawComfyui = typeof item === "string" ? undefined : item.comfyui;
+        const comfyui = rawComfyui ? migrateComfyuiMeta(rawComfyui) : undefined;
         result.push({ name, capability, script, ...(comfyui ? { comfyui } : {}) });
     }
     return result;
