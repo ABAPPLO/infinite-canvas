@@ -575,6 +575,8 @@ export default {
         comfyui: {
             ioTitle: "配置 ComfyUI 输入输出节点",
             ioHint: "把画布的提示词/参考图映射到工作流节点，并选择读取结果的输出节点。",
+            ioLoadError: "无法加载 ComfyUI 节点定义（object_info），请确认渠道地址可用后重试。",
+            ioEmpty: "未在工作流中发现该类型的节点。",
             promptNode: "正向提示词节点",
             negativeNode: "负向提示词节点",
             referenceNodes: "参考图节点",

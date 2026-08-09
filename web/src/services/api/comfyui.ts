@@ -17,7 +17,7 @@ async function comfyuiRequest<T = unknown>(target: string, method: "get" | "post
     return response.data;
 }
 
-export type ComfyuiObjectInfo = Record<string, { input?: { required?: Record<string, unknown[]>; optional?: Record<string, unknown[]> } }>;
+export type ComfyuiObjectInfo = Record<string, { input?: { required?: Record<string, unknown[]>; optional?: Record<string, unknown[]> }; output?: string[] }>;
 
 const objectInfoCache = new Map<string, ComfyuiObjectInfo>();
 
@@ -174,20 +174,71 @@ export function parseComfyuiPromptNodes(promptJson: Record<string, { class_type:
     return { candidates, defaults };
 }
 
-export type PromptNodeInventoryItem = { id: string; classType: string; inputs: string[] };
+export type ComfyuiInputSlot = { node: string; input: string; classType: string };
+export type ComfyuiOutputCandidate = { node: string; classType: string; capability: "image" | "video" | "audio" };
+export type ComfyuiNodeInventory = {
+    textInputs: ComfyuiInputSlot[]; // STRING-typed inputs → prompt candidates
+    referenceImages: ComfyuiInputSlot[]; // LoadImage-style nodes → reference image slots
+    outputs: ComfyuiOutputCandidate[]; // saver/preview nodes → result nodes, by capability
+    defaults: Partial<ComfyuiIoMapping>;
+};
+
+const REFERENCE_LOADER_TYPES = new Set(["LoadImage", "LoadImageBatch", "LoadImageByUrl"]);
+
+function inputTypeOf(spec: unknown): string | undefined {
+    return Array.isArray(spec) && typeof spec[0] === "string" ? spec[0] : undefined;
+}
+
+/** Capability for a saver or preview node: known sets first, then object_info output type for Save/Preview/VHS-prefixed nodes. */
+function capabilityForClass(classType: string, def: ComfyuiObjectInfo[string] | undefined): "image" | "video" | "audio" | undefined {
+    if (IMAGE_OUTPUT_TYPES.has(classType)) return "image";
+    if (VIDEO_OUTPUT_TYPES.has(classType)) return "video";
+    if (AUDIO_OUTPUT_TYPES.has(classType)) return "audio";
+    if (/^(Save|Preview|VHS_)/.test(classType) && Array.isArray(def?.output)) {
+        for (const t of def.output) {
+            if (t === "IMAGE") return "image";
+            if (t === "VIDEO") return "video";
+            if (t === "AUDIO") return "audio";
+        }
+    }
+    return undefined;
+}
 
 /**
- * Inventory every node in a prompt-format workflow with no type filtering, so the IO modal can offer
- * manual node/slot selection even when auto-detection (parseComfyuiPromptNodes) recognises nothing —
- * e.g. custom loaders or output nodes outside the hardcoded type sets. Inputs are the node's input
- * names (connection slots and widgets alike) taken from the prompt JSON keys.
+ * Build a typed IO inventory from a prompt-format workflow + object_info: STRING inputs become prompt
+ * candidates, LoadImage-style nodes become reference-image slots, and saver/preview nodes become typed
+ * output candidates. Input names come from object_info (not only the converted prompt's present keys),
+ * so an unwired prompt slot on a custom encoder (e.g. TextEncodeQwenImageEditPlus.prompt) is still
+ * selectable for manual binding.
  */
-export function inventoryPromptNodes(promptJson: Record<string, any>): PromptNodeInventoryItem[] {
-    return Object.entries(promptJson).map(([id, node]) => ({
-        id,
-        classType: typeof node?.class_type === "string" ? node.class_type : "",
-        inputs: node && typeof node.inputs === "object" ? Object.keys(node.inputs) : [],
-    }));
+export function buildComfyuiNodeInventory(promptJson: Record<string, any>, objectInfo: ComfyuiObjectInfo): ComfyuiNodeInventory {
+    const textInputs: ComfyuiInputSlot[] = [];
+    const referenceImages: ComfyuiInputSlot[] = [];
+    const outputs: ComfyuiOutputCandidate[] = [];
+
+    for (const [id, node] of Object.entries(promptJson)) {
+        const classType = typeof node?.class_type === "string" ? node.class_type : "";
+        const def = objectInfo[classType];
+        if (def) {
+            for (const group of [def.input?.required, def.input?.optional]) {
+                if (!group) continue;
+                for (const [name, spec] of Object.entries(group)) {
+                    if (inputTypeOf(spec) === "STRING") textInputs.push({ node: id, input: name, classType });
+                }
+            }
+        }
+        if (REFERENCE_LOADER_TYPES.has(classType)) referenceImages.push({ node: id, input: "image", classType });
+        const capability = capabilityForClass(classType, def);
+        if (capability) outputs.push({ node: id, classType, capability });
+    }
+
+    const promptLike = textInputs.find((s) => /^(text|prompt|positive)$/i.test(s.input));
+    const firstText = promptLike ?? textInputs[0];
+    const defaults: Partial<ComfyuiIoMapping> = {};
+    if (firstText) defaults.promptText = { node: firstText.node, input: firstText.input };
+    if (referenceImages.length) defaults.referenceImages = referenceImages.map((r) => ({ node: r.node, input: r.input }));
+    if (outputs.length) defaults.outputNode = outputs[0].node;
+    return { textInputs, referenceImages, outputs, defaults };
 }
 
 export type ComfyuiWorkflowSummary = { name: string; promptJson: Record<string, any>; ok: boolean; reason?: string; source?: "server" | "import" };
@@ -365,13 +416,18 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     const deadline = Date.now() + 300_000;
     for (;;) {
         if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        const history = await comfyuiRequest<Record<string, { outputs?: Record<string, { images?: ComfyuiOutputImage[]; gifs?: ComfyuiOutputImage[] }>; status?: { completed?: boolean } }>>(target, "get", `/history/${promptId}`, undefined, signal);
+        const history = await comfyuiRequest<Record<string, { outputs?: Record<string, Record<string, ComfyuiOutputImage[]>>; status?: { completed?: boolean } }>>(target, "get", `/history/${promptId}`, undefined, signal);
         const entry = history[promptId];
         if (entry?.status?.completed) {
             const nodeOutput = entry.outputs?.[io.outputNode];
-            const images = nodeOutput?.images || nodeOutput?.gifs || [];
-            if (!images.length) throw new Error(i18n.t("config.comfyui.noOutput"));
-            return Promise.all(images.map((image) => fetchView(target, image, signal)));
+            // Savers surface results under varying keys (images / gifs / videos / audio …) depending on
+            // type (SaveImage, VHS_VideoCombine, SaveVideo, SaveAudio). Collect every file-like entry
+            // regardless of key so video/audio outputs read just like images.
+            const entries = Object.values(nodeOutput ?? {})
+                .flat()
+                .filter((v): v is ComfyuiOutputImage => Boolean(v && typeof v.filename === "string"));
+            if (!entries.length) throw new Error(i18n.t("config.comfyui.noOutput"));
+            return Promise.all(entries.map((image) => fetchView(target, image, signal)));
         }
         if (Date.now() >= deadline) throw new Error(i18n.t("config.comfyui.pollTimeout"));
         await sleep(1000, signal);

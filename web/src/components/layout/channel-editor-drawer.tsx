@@ -163,6 +163,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
             {ioTarget && (
                 <ComfyuiIoModal
                     open={Boolean(ioTarget)}
+                    target={draft.baseUrl}
                     promptJson={draft.models.find((m) => m.name === ioTarget.name)?.comfyui?.promptJson || {}}
                     capability={ioTarget.capability}
                     initial={draft.models.find((m) => m.name === ioTarget.name)?.comfyui?.io || {}}

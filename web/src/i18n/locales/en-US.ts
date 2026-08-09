@@ -575,6 +575,8 @@ export default {
         comfyui: {
             ioTitle: "Configure ComfyUI IO Nodes",
             ioHint: "Map the canvas prompt/reference to workflow nodes and choose the output node to read results from.",
+            ioLoadError: "Could not load ComfyUI node definitions (object_info). Check the channel address and retry.",
+            ioEmpty: "No node of this type was found in the workflow.",
             promptNode: "Positive prompt node",
             negativeNode: "Negative prompt node",
             referenceNodes: "Reference image nodes",
