@@ -170,6 +170,7 @@ export function parseComfyuiPromptNodes(promptJson: Record<string, { class_type:
     if (candidates.seed.length) defaults.seed = { node: candidates.seed[0].id, input: candidates.seed[0].input };
     const firstImageOutput = candidates.outputs.find((o) => o.capability === "image");
     if (firstImageOutput) defaults.outputNode = firstImageOutput.id;
+    if (candidates.referenceImages.length) defaults.referenceImages = candidates.referenceImages.map((c) => ({ node: c.id, input: c.input }));
     return { candidates, defaults };
 }
 
@@ -298,7 +299,7 @@ export type RunComfyuiArgs = {
     meta: ComfyuiModelMeta;
     prompt: string;
     negativePrompt?: string;
-    referenceDataUrl?: string;
+    references?: string[];
     size?: { width?: number; height?: number };
     signal?: AbortSignal;
 };
@@ -319,9 +320,15 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     if (io.seed) setNodeInput(graph, io.seed, Math.floor(Math.random() * 1_000_000_000_000));
     if (io.width && args.size?.width) setNodeInput(graph, io.width, args.size.width);
     if (io.height && args.size?.height) setNodeInput(graph, io.height, args.size.height);
-    if (io.referenceImage && args.referenceDataUrl) {
-        const uploaded = await uploadImage(target, args.referenceDataUrl, signal);
-        setNodeInput(graph, io.referenceImage, uploaded.name);
+    // Positional multi-reference: ref[i] → referenceImages[i]. Extras clamped; missing slots keep the
+    // workflow's own value. Fall back to legacy single referenceImage slot while the IO modal still
+    // writes the old field (Task 3 switches the modal; Task 4 removes this fallback).
+    const refSlots = io.referenceImages?.length ? io.referenceImages : io.referenceImage ? [io.referenceImage] : [];
+    const refs = args.references ?? [];
+    for (let i = 0; i < refSlots.length; i++) {
+        if (i >= refs.length) break;
+        const uploaded = await uploadImage(target, refs[i], signal);
+        setNodeInput(graph, refSlots[i], uploaded.name);
     }
     patchRequiredDefaults(graph);
 

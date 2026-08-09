@@ -810,9 +810,9 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (requestConfig.apiFormat === "comfyui") {
         const entry = resolveChannelModelEntry(config, config.model || config.imageModel);
         if (!entry?.model.comfyui) throw new Error(apiText("requestFailed"));
-        const referenceDataUrl = references.length ? await imageToDataUrl(references[0]) : undefined;
+        const referenceDataUrls = await Promise.all(references.map((image) => imageToDataUrl(image)));
         try {
-            const dataUrls = await runComfyui({ target: requestConfig.baseUrl, meta: entry.model.comfyui, prompt: withSystemPrompt(requestConfig, requestPrompt), referenceDataUrl, signal: options?.signal });
+            const dataUrls = await runComfyui({ target: requestConfig.baseUrl, meta: entry.model.comfyui, prompt: withSystemPrompt(requestConfig, requestPrompt), references: referenceDataUrls, signal: options?.signal });
             return dataUrls.map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
