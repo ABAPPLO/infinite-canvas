@@ -1,7 +1,7 @@
 import axios from "axios";
 
 import i18n from "@/i18n";
-import type { ComfyuiIoMapping, ComfyuiModelMeta } from "@/stores/use-config-store";
+import type { ComfyuiIoMapping, ComfyuiModelMeta, ComfyuiParamSource } from "@/stores/use-config-store";
 
 /** Same-origin ComfyUI call: route through the Vite dev proxy with the real address in a header. */
 async function comfyuiRequest<T = unknown>(target: string, method: "get" | "post", path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -208,6 +208,9 @@ export type ComfyuiOutputCandidate = { node: string; classType: string; capabili
 export type ComfyuiNodeInventory = {
     textInputs: ComfyuiInputSlot[]; // STRING-typed inputs → prompt candidates
     referenceImages: ComfyuiInputSlot[]; // LoadImage-style nodes → reference image slots
+    width: ComfyuiInputSlot[]; // latent width inputs → image-size injection targets
+    height: ComfyuiInputSlot[]; // latent height inputs
+    seed: ComfyuiInputSlot[]; // KSampler seed inputs
     outputs: ComfyuiOutputCandidate[]; // saver/preview nodes → result nodes, by capability
     defaults: Partial<ComfyuiIoMapping>;
 };
@@ -243,11 +246,15 @@ function capabilityForClass(classType: string, def: ComfyuiObjectInfo[string] | 
 export function buildComfyuiNodeInventory(promptJson: Record<string, any>, objectInfo: ComfyuiObjectInfo): ComfyuiNodeInventory {
     const textInputs: ComfyuiInputSlot[] = [];
     const referenceImages: ComfyuiInputSlot[] = [];
+    const width: ComfyuiInputSlot[] = [];
+    const height: ComfyuiInputSlot[] = [];
+    const seed: ComfyuiInputSlot[] = [];
     const outputs: ComfyuiOutputCandidate[] = [];
 
     for (const [id, node] of Object.entries(promptJson)) {
         const classType = typeof node?.class_type === "string" ? node.class_type : "";
         const def = objectInfo[classType];
+        const inputs = node?.inputs || {};
         if (def) {
             for (const group of [def.input?.required, def.input?.optional]) {
                 if (!group) continue;
@@ -257,6 +264,13 @@ export function buildComfyuiNodeInventory(promptJson: Record<string, any>, objec
             }
         }
         if (REFERENCE_LOADER_TYPES.has(classType)) referenceImages.push({ node: id, input: "image", classType });
+        if (LATENT_TYPES.has(classType)) {
+            if ("width" in inputs) width.push({ node: id, input: "width", classType });
+            if ("height" in inputs) height.push({ node: id, input: "height", classType });
+        }
+        if (classType === "KSampler" || classType === "KSamplerAdvanced") {
+            if ("seed" in inputs) seed.push({ node: id, input: "seed", classType });
+        }
         const capability = capabilityForClass(classType, def);
         if (capability) outputs.push({ node: id, classType, capability });
     }
@@ -266,8 +280,11 @@ export function buildComfyuiNodeInventory(promptJson: Record<string, any>, objec
     const defaults: Partial<ComfyuiIoMapping> = {};
     if (firstText) defaults.promptText = { node: firstText.node, input: firstText.input };
     if (referenceImages.length) defaults.referenceImages = referenceImages.map((r) => ({ node: r.node, input: r.input }));
+    if (width.length) defaults.width = { node: width[0].node, input: width[0].input };
+    if (height.length) defaults.height = { node: height[0].node, input: height[0].input };
+    if (seed.length) defaults.seed = { node: seed[0].node, input: seed[0].input };
     if (outputs.length) defaults.outputNode = outputs[0].node;
-    return { textInputs, referenceImages, outputs, defaults };
+    return { textInputs, referenceImages, width, height, seed, outputs, defaults };
 }
 
 export type ComfyuiWorkflowSummary = { name: string; promptJson: Record<string, any>; ok: boolean; reason?: string; source?: "server" | "import" };
@@ -431,8 +448,12 @@ export type RunComfyuiArgs = {
     negativePrompt?: string;
     references?: string[];
     size?: { width?: number; height?: number };
+    settings?: Partial<Record<ComfyuiParamSource, string | number>>; // canvas settings → mapped node inputs (io.params)
     signal?: AbortSignal;
 };
+
+// Numeric canvas sources are coerced to a number before injection; enum sources go through valueMap.
+const COMFYUI_NUMERIC_PARAM_SOURCES = new Set<ComfyuiParamSource>(["count", "videoSeconds"]);
 
 /**
  * Run a comfyui workflow: inject prompt/reference/seed into the mapped nodes, submit /prompt,
@@ -450,6 +471,22 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     if (io.seed) setNodeInput(graph, io.seed, Math.floor(Math.random() * 1_000_000_000_000));
     if (io.width && args.size?.width) setNodeInput(graph, io.width, args.size.width);
     if (io.height && args.size?.height) setNodeInput(graph, io.height, args.size.height);
+    // Canvas settings (quality/count/video seconds/...) → mapped node inputs. Numeric sources are coerced
+    // to numbers; enum sources translate via valueMap (canvas value → ComfyUI value); a source with a
+    // valueMap whose key is absent is skipped; a source without a valueMap passes the raw string through.
+    for (const param of io.params ?? []) {
+        const raw = args.settings?.[param.source];
+        if (raw === undefined || raw === "") continue;
+        let mapped: string | number;
+        if (COMFYUI_NUMERIC_PARAM_SOURCES.has(param.source)) mapped = Number(raw);
+        else if (param.valueMap && String(raw) in param.valueMap) {
+            // valueMap values come from text inputs as strings; coerce numeric ones so INT/FLOAT inputs match.
+            const v = param.valueMap[String(raw)];
+            mapped = typeof v === "number" ? v : /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
+        } else if (param.valueMap) continue;
+        else mapped = String(raw);
+        setNodeInput(graph, { node: param.node, input: param.input }, mapped);
+    }
     // Positional multi-reference: ref[i] → referenceImages[i]. Extras clamped.
     const refSlots = io.referenceImages ?? [];
     const refs = args.references ?? [];

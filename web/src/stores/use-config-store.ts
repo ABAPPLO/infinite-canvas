@@ -13,25 +13,37 @@ export type ChannelModel = {
     name: string;
     capability: ModelCapability;
     script?: string;
-    comfyui?: ComfyuiModelMeta;       // present only for comfyui channels
+    comfyui?: ComfyuiModelMeta; // present only for comfyui channels
 };
 
 // An IO injection point: which node, and which input on that node.
 export type ComfyuiIoSlot = { node: string; input: string };
 
+// A canvas setting forwarded into a workflow node input. Numeric sources (count, videoSeconds) are coerced
+// to numbers; enum sources (quality/vquality/background/videoGenerateAudio) are translated via valueMap
+// (canvas value → ComfyUI value); a source without a valueMap passes the raw string through.
+export type ComfyuiParamSource = "count" | "quality" | "background" | "videoSeconds" | "vquality" | "videoGenerateAudio";
+export type ComfyuiParamOverride = {
+    source: ComfyuiParamSource;
+    node: string; // target node id
+    input: string; // target input name on that node
+    valueMap?: Record<string, string | number>; // optional: map a canvas enum value to the ComfyUI value
+};
+
 export type ComfyuiIoMapping = {
-    promptText: ComfyuiIoSlot;        // positive prompt, e.g. { node: "<CLIPTextEncode id>", input: "text" }
-    negativeText?: ComfyuiIoSlot;     // optional negative prompt
+    promptText: ComfyuiIoSlot; // positive prompt, e.g. { node: "<CLIPTextEncode id>", input: "text" }
+    negativeText?: ComfyuiIoSlot; // optional negative prompt
     referenceImages?: ComfyuiIoSlot[]; // ordered image-to-image sources: ref[i] → LoadImage slot i
-    width?: ComfyuiIoSlot;            // e.g. { node: "<EmptyLatentImage id>", input: "width" }
+    width?: ComfyuiIoSlot; // e.g. { node: "<EmptyLatentImage id>", input: "width" }
     height?: ComfyuiIoSlot;
-    seed?: ComfyuiIoSlot;             // e.g. { node: "<KSampler id>", input: "seed" }
-    outputNode: string;               // bare node id to read results from, e.g. "<SaveImage id>"
+    seed?: ComfyuiIoSlot; // e.g. { node: "<KSampler id>", input: "seed" }
+    outputNode: string; // bare node id to read results from, e.g. "<SaveImage id>"
+    params?: ComfyuiParamOverride[]; // canvas settings (quality/count/video...) → arbitrary node inputs
 };
 
 export type ComfyuiModelMeta = {
-    promptJson: Record<string, any>;  // Prompt/API-format workflow
-    io: Partial<ComfyuiIoMapping>;    // filled by the IO modal; partial until configured
+    promptJson: Record<string, any>; // Prompt/API-format workflow
+    io: Partial<ComfyuiIoMapping>; // filled by the IO modal; partial until configured
     source?: "server" | "import";
 };
 
@@ -365,7 +377,18 @@ export function resolveModelChannel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
     const model = decoded?.model || value;
     const matched = decoded ? config.channels.find((channel) => channel.id === decoded.channelId) : config.channels.find((channel) => channel.models.some((item) => item.name === model));
-    return matched || config.channels[0] || createModelChannel({ id: "default", name: i18n.t("config.channels.defaultName"), baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName).map((name) => ({ name, capability: guessCapability(name) })) });
+    return (
+        matched ||
+        config.channels[0] ||
+        createModelChannel({
+            id: "default",
+            name: i18n.t("config.channels.defaultName"),
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            apiFormat: config.apiFormat,
+            models: config.models.map(modelOptionName).map((name) => ({ name, capability: guessCapability(name) })),
+        })
+    );
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {

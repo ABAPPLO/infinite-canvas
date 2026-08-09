@@ -24,10 +24,7 @@ type ResponseToolCall = {
     thoughtSignature?: string;
 };
 
-type ResponseInputMessage =
-    | AiTextMessage
-    | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string }
-    | { role: "tool"; tool_call_id: string; content: string };
+type ResponseInputMessage = AiTextMessage | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string } | { role: "tool"; tool_call_id: string; content: string };
 
 type ResponseFunctionTool = {
     type: "function";
@@ -47,10 +44,7 @@ type ToolResponseResult = {
 type ToolChoice = "auto" | "required" | { type: "function"; name: string };
 type ResponseMessageContent = AiTextMessage["content"] | string;
 type ResponseInputContent = { type: "input_text"; text: string } | { type: "input_image"; image_url: string };
-type ResponseInputItem =
-    | { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] }
-    | { type: "function_call"; call_id: string; name: string; arguments: string }
-    | { type: "function_call_output"; call_id: string; output: string };
+type ResponseInputItem = { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] } | { type: "function_call"; call_id: string; name: string; arguments: string } | { type: "function_call_output"; call_id: string; output: string };
 type ResponseApiToolDefinition = {
     type: "function";
     name: string;
@@ -58,9 +52,7 @@ type ResponseApiToolDefinition = {
     parameters: Record<string, unknown>;
     strict?: boolean;
 };
-type ResponseApiOutputItem =
-    | { type?: "message"; content?: Array<{ type?: string; text?: string }> }
-    | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
+type ResponseApiOutputItem = { type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
 type ResponseApiPayload = {
     id?: string;
     output?: ResponseApiOutputItem[];
@@ -171,7 +163,7 @@ function parseImageRatio(value: string) {
     return ratio;
 }
 
-function parseImageDimensions(value: string) {
+export function parseImageDimensions(value: string) {
     const match = value.match(/^(\d+)x(\d+)$/i);
     if (!match) return null;
     return { width: Number(match[1]), height: Number(match[2]) };
@@ -196,6 +188,24 @@ function resolveRequestSize(quality: string | undefined, size: string) {
     }
     if (value.includes(":")) return resolveSize(quality, value);
     throw new Error(apiText("invalidImageSizeFormat"));
+}
+
+/** Resolve the canvas image size (quality + ratio/px) to {width,height} for ComfyUI latent injection, or undefined. */
+function comfyuiImageSize(config: AiConfig): { width: number; height: number } | undefined {
+    const requestSize = resolveRequestSize(normalizeQuality(config.quality), config.size);
+    return requestSize ? (parseImageDimensions(requestSize) ?? undefined) : undefined;
+}
+
+/** Canvas settings forwarded into a ComfyUI workflow's mapped param nodes (io.params). */
+function comfyuiSettings(config: AiConfig) {
+    return {
+        count: config.count,
+        quality: config.quality,
+        background: config.background,
+        videoSeconds: config.videoSeconds,
+        vquality: config.vquality,
+        videoGenerateAudio: config.videoGenerateAudio,
+    };
 }
 
 function resolveGeminiImageConfig(config: AiConfig) {
@@ -249,22 +259,16 @@ function parseImagePayload(payload: ImageApiResponse) {
         throw new Error(payload.msg || apiText("requestFailed"));
     }
     // Support data, images, and results response fields used by different APIs.
-    const imageList = payload.data
-        || (payload as Record<string, unknown>).images as Array<Record<string, unknown>> | undefined
-        || (payload as Record<string, unknown>).results as Array<Record<string, unknown>> | undefined
-        || [];
-    const images =
-        imageList
-            .map(resolveImageDataUrl)
-            .filter((value): value is string => Boolean(value))
-            .map((dataUrl) => ({ id: nanoid(), dataUrl }));
+    const imageList = payload.data || ((payload as Record<string, unknown>).images as Array<Record<string, unknown>> | undefined) || ((payload as Record<string, unknown>).results as Array<Record<string, unknown>> | undefined) || [];
+    const images = imageList
+        .map(resolveImageDataUrl)
+        .filter((value): value is string => Boolean(value))
+        .map((dataUrl) => ({ id: nanoid(), dataUrl }));
 
     if (images.length === 0) {
         // Check whether the response contains data in an unrecognized format.
         const rawKeys = Object.keys(payload).filter((k) => k !== "code" && k !== "msg" && k !== "error");
-        throw new Error(rawKeys.length > 0
-            ? apiText("unknownImageResponse", { fields: rawKeys.join(", ") })
-            : apiText("noImageReturned"));
+        throw new Error(rawKeys.length > 0 ? apiText("unknownImageResponse", { fields: rawKeys.join(", ") }) : apiText("noImageReturned"));
     }
 
     return images;
@@ -289,17 +293,8 @@ function readApiErrorMessage(value: unknown): string {
     if (typeof value !== "object") return "";
     const payload = value as { msg?: unknown; message?: unknown; error?: unknown; detail?: unknown };
     // error may be a string or an object containing a message.
-    const errorMsg =
-        typeof payload.error === "string"
-            ? payload.error
-            : (payload.error as { message?: unknown })?.message;
-    return (
-        readApiErrorMessage(payload.msg) ||
-        readApiErrorMessage(payload.message) ||
-        readApiErrorMessage(errorMsg) ||
-        readApiErrorMessage(payload.detail) ||
-        ""
-    );
+    const errorMsg = typeof payload.error === "string" ? payload.error : (payload.error as { message?: unknown })?.message;
+    return readApiErrorMessage(payload.msg) || readApiErrorMessage(payload.message) || readApiErrorMessage(errorMsg) || readApiErrorMessage(payload.detail) || "";
 }
 
 function readAxiosError(error: unknown, fallback: string) {
@@ -524,12 +519,7 @@ async function requestStreamingResponse(config: AiConfig, body: Record<string, u
 }
 
 function toGeminiBody(config: AiConfig, messages: ResponseInputMessage[], extra?: Record<string, unknown>) {
-    const systemText = [
-        config.systemPrompt.trim(),
-        ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : [])),
-    ]
-        .filter(Boolean)
-        .join("\n\n");
+    const systemText = [config.systemPrompt.trim(), ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : []))].filter(Boolean).join("\n\n");
     const contents = toGeminiContents(messages.filter((message) => ("type" in message ? true : message.role !== "system")));
     return {
         contents,
@@ -589,10 +579,7 @@ function toGeminiToolOptions(tools: ResponseFunctionTool[], toolChoice: ToolChoi
         description: tool.function.description,
         parameters: tool.function.parameters,
     }));
-    const functionCallingConfig =
-        typeof toolChoice === "object"
-            ? { mode: "ANY", allowedFunctionNames: [toolChoice.name] }
-            : { mode: toolChoice === "required" ? "ANY" : "AUTO" };
+    const functionCallingConfig = typeof toolChoice === "object" ? { mode: "ANY", allowedFunctionNames: [toolChoice.name] } : { mode: toolChoice === "required" ? "ANY" : "AUTO" };
     return {
         tools: [{ functionDeclarations }],
         toolConfig: { functionCallingConfig },
@@ -741,7 +728,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
         const entry = resolveChannelModelEntry(config, config.model || config.imageModel);
         if (!entry?.model.comfyui) throw new Error(apiText("requestFailed"));
         try {
-            const dataUrls = await runComfyui({ target: requestConfig.baseUrl, meta: entry.model.comfyui, prompt: withSystemPrompt(requestConfig, prompt), signal: options?.signal });
+            const dataUrls = await runComfyui({ target: requestConfig.baseUrl, meta: entry.model.comfyui, prompt: withSystemPrompt(requestConfig, prompt), size: comfyuiImageSize(config), settings: comfyuiSettings(config), signal: options?.signal });
             return dataUrls.map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
@@ -812,7 +799,15 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         if (!entry?.model.comfyui) throw new Error(apiText("requestFailed"));
         const referenceDataUrls = await Promise.all(references.map((image) => imageToDataUrl(image)));
         try {
-            const dataUrls = await runComfyui({ target: requestConfig.baseUrl, meta: entry.model.comfyui, prompt: withSystemPrompt(requestConfig, requestPrompt), references: referenceDataUrls, signal: options?.signal });
+            const dataUrls = await runComfyui({
+                target: requestConfig.baseUrl,
+                meta: entry.model.comfyui,
+                prompt: withSystemPrompt(requestConfig, requestPrompt),
+                references: referenceDataUrls,
+                size: comfyuiImageSize(config),
+                settings: comfyuiSettings(config),
+                signal: options?.signal,
+            });
             return dataUrls.map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
@@ -915,11 +910,19 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
             if (answer === apiText("noContent")) onDelta(answer);
             return answer;
         }
-        const answer = (await requestStreamingResponse(requestConfig, {
-            model: requestConfig.model,
-            input: toResponseInput(withSystemMessage(requestConfig, messages)),
-            ...(requestConfig.reasoningEffort === "auto" ? {} : { reasoning: { effort: requestConfig.reasoningEffort } }),
-        }, onDelta, options)).content || apiText("noContent");
+        const answer =
+            (
+                await requestStreamingResponse(
+                    requestConfig,
+                    {
+                        model: requestConfig.model,
+                        input: toResponseInput(withSystemMessage(requestConfig, messages)),
+                        ...(requestConfig.reasoningEffort === "auto" ? {} : { reasoning: { effort: requestConfig.reasoningEffort } }),
+                    },
+                    onDelta,
+                    options,
+                )
+            ).content || apiText("noContent");
         if (answer === apiText("noContent")) onDelta(answer);
         return answer;
     } catch (error) {

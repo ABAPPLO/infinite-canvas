@@ -8,6 +8,7 @@ import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
 import { buildApiUrl, modelOptionName, resolveChannelModelEntry, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
 import { runComfyui } from "./comfyui";
+import { parseImageDimensions } from "./image";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -142,7 +143,16 @@ async function createComfyuiVideoTask(config: AiConfig, model: string, prompt: s
     const entry = resolveChannelModelEntry(config, model);
     if (!entry?.model.comfyui) throw new Error(apiText("videoTaskCreateFailed"));
     const referenceDataUrls = await Promise.all(references.map((image) => imageToDataUrl(image)));
-    const dataUrls = await runComfyui({ target: config.baseUrl, meta: entry.model.comfyui, prompt, references: referenceDataUrls, signal: options?.signal });
+    const dims = parseImageDimensions(normalizeVideoSize(config.size) ?? "") ?? undefined;
+    const dataUrls = await runComfyui({
+        target: config.baseUrl,
+        meta: entry.model.comfyui,
+        prompt,
+        references: referenceDataUrls,
+        size: dims,
+        settings: { count: config.count, quality: config.quality, background: config.background, videoSeconds: config.videoSeconds, vquality: config.vquality, videoGenerateAudio: config.videoGenerateAudio },
+        signal: options?.signal,
+    });
     const first = dataUrls[0];
     if (!first) throw new Error(apiText("noPlayableVideo"));
     const blob = await (await fetch(first)).blob();
