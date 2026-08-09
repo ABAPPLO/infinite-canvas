@@ -22,7 +22,6 @@ export type ComfyuiIoSlot = { node: string; input: string };
 export type ComfyuiIoMapping = {
     promptText: ComfyuiIoSlot;        // positive prompt, e.g. { node: "<CLIPTextEncode id>", input: "text" }
     negativeText?: ComfyuiIoSlot;     // optional negative prompt
-    referenceImage?: ComfyuiIoSlot;   // [legacy] image-to-image source — migrated to referenceImages[0]; removed in Task 4
     referenceImages?: ComfyuiIoSlot[]; // ordered image-to-image sources: ref[i] → LoadImage slot i
     width?: ComfyuiIoSlot;            // e.g. { node: "<EmptyLatentImage id>", input: "width" }
     height?: ComfyuiIoSlot;
@@ -282,11 +281,14 @@ export function useEffectiveConfig() {
     return useMemo(() => ({ ...config, channelMode: "local" as const }), [config]);
 }
 
-// Migrate legacy single referenceImage → ordered referenceImages[]. No-op once a model already has referenceImages.
+// Migrate legacy single referenceImage → ordered referenceImages[]. Reads the legacy field via cast
+// (persisted localStorage may still carry it) and strips it from the migrated io.
 function migrateComfyuiMeta(meta: ComfyuiModelMeta): ComfyuiModelMeta {
-    const io = meta.io;
+    const io = meta.io as Partial<ComfyuiIoMapping> & { referenceImage?: ComfyuiIoSlot };
     if (io.referenceImages || !io.referenceImage) return meta;
-    return { ...meta, io: { ...io, referenceImages: [io.referenceImage] } };
+    const { referenceImage, ...rest } = io;
+    void referenceImage;
+    return { ...meta, io: { ...rest, referenceImages: [io.referenceImage] } };
 }
 
 /** Normalize a mixed list of raw model names or model objects into deduped ChannelModel entries. */

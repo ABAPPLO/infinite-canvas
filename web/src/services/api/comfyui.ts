@@ -321,9 +321,8 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     if (io.width && args.size?.width) setNodeInput(graph, io.width, args.size.width);
     if (io.height && args.size?.height) setNodeInput(graph, io.height, args.size.height);
     // Positional multi-reference: ref[i] → referenceImages[i]. Extras clamped; missing slots keep the
-    // workflow's own value. Fall back to legacy single referenceImage slot while the IO modal still
-    // writes the old field (Task 3 switches the modal; Task 4 removes this fallback).
-    const refSlots = io.referenceImages?.length ? io.referenceImages : io.referenceImage ? [io.referenceImage] : [];
+    // workflow's own value.
+    const refSlots = io.referenceImages ?? [];
     const refs = args.references ?? [];
     for (let i = 0; i < refSlots.length; i++) {
         if (i >= refs.length) break;

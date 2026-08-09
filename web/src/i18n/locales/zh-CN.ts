@@ -577,7 +577,6 @@ export default {
             ioHint: "把画布的提示词/参考图映射到工作流节点，并选择读取结果的输出节点。",
             promptNode: "正向提示词节点",
             negativeNode: "负向提示词节点",
-            referenceNode: "参考图节点（图生图）",
             referenceNodes: "参考图节点",
             referenceOrderHint: "顺序决定注入：第 i 张参考图 → 第 i 个 LoadImage；多余截断、不足留空。",
             referenceAdd: "添加参考图节点",

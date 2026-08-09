@@ -577,7 +577,6 @@ export default {
             ioHint: "Map the canvas prompt/reference to workflow nodes and choose the output node to read results from.",
             promptNode: "Positive prompt node",
             negativeNode: "Negative prompt node",
-            referenceNode: "Reference image node (img2img)",
             referenceNodes: "Reference image nodes",
             referenceOrderHint: "Order sets injection: ref[i] → LoadImage slot i; extras clamped, missing slots keep the workflow default.",
             referenceAdd: "Add reference node",
