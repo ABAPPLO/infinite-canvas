@@ -62,8 +62,9 @@
 
 ### 5. 宿主接线（`image.ts`）
 
-- **生图分支**（`:744`）：补传 `references`（`await Promise.all(references.map(imageToDataUrl))`；现状不传）。
-- **edit 分支**（`:813`）：`references[0]` → 整组 `references`（同上转 dataUrl 数组）。
+> 修正（plan 阶段核实）：画布上游有参考图时**统一走 `requestEdit`**（见 `use-plugin-host.tsx:56`、`project.tsx` 多处 `refs.length ? requestEdit : requestGeneration`）。`requestGeneration`（`:744`）是纯文生图、**从不携带参考图**，因此**无需改动**。
+
+- **edit 分支**（`requestEdit` 内 comfyui 分支，`:813`）：`references[0]` → 整组 `await Promise.all(references.map(imageToDataUrl))`，作为 `references` 传入 `runComfyui`。
 - **画布节点侧零改动**：节点已汇成 `references[]`。
 
 ### 6. 输出类型适配（V1）
