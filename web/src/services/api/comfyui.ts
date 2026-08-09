@@ -177,8 +177,15 @@ type UserdataEntry = { path?: string; name?: string; type?: string };
  * unavailable or empty, so the UI can fall back to manual JSON import.
  */
 export async function fetchComfyuiWorkflows(target: string, signal?: AbortSignal): Promise<ComfyuiWorkflowSummary[]> {
-    const list = await comfyuiRequest<UserdataEntry[]>(target, "get", "/api/userdata/workflows?recurse=true", undefined, signal);
-    const files = (Array.isArray(list) ? list : []).filter((entry) => (entry.path || entry.name || "").endsWith(".json"));
+    // List endpoint is /api/v2/userdata?path=workflows (returns {name,path,type,...} objects with the
+    // full "workflows/<file>.json" path). The v1 "/api/userdata/workflows" path is the FILE endpoint
+    // (matches /userdata/{file} with file="workflows") and 403s — not the list endpoint.
+    const list = await comfyuiRequest<UserdataEntry[]>(target, "get", "/api/v2/userdata?path=workflows", undefined, signal);
+    const files = (Array.isArray(list) ? list : []).filter((entry) => {
+        const filePath = entry.path || entry.name || "";
+        // Skip ComfyUI-internal dotfiles (e.g. .index.json) — not real workflows.
+        return filePath.endsWith(".json") && !filePath.split("/").pop()?.startsWith(".");
+    });
     if (!files.length) throw new Error(i18n.t("config.comfyui.noServerWorkflows"));
 
     const objectInfo = await getObjectInfo(target, signal);
@@ -187,7 +194,9 @@ export async function fetchComfyuiWorkflows(target: string, signal?: AbortSignal
         const filePath = entry.path || entry.name || "";
         const name = filePath.replace(/^workflows\//, "").replace(/\.json$/, "");
         try {
-            const raw = await comfyuiRequest<unknown>(target, "get", `/api/userdata/${filePath}`, undefined, signal);
+            // {file} route segment doesn't match "/", so encode the path (workflows/x.json → workflows%2Fx.json);
+            // ComfyUI decodes %2F back to "/" server-side (user_manager.py: parse.unquote on "%").
+            const raw = await comfyuiRequest<unknown>(target, "get", `/api/userdata/${encodeURIComponent(filePath)}`, undefined, signal);
             const format = detectWorkflowFormat(raw);
             if (format === "prompt") {
                 const promptJson = raw as Record<string, any>;
@@ -312,13 +321,7 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
 
     let submit: { prompt_id?: string; node_errors?: Record<string, unknown>; error?: string };
     try {
-        submit = await comfyuiRequest<{ prompt_id?: string; node_errors?: Record<string, unknown>; error?: string }>(
-            target,
-            "post",
-            "/prompt",
-            { prompt: graph, client_id: COMFYUI_CLIENT_ID },
-            signal,
-        );
+        submit = await comfyuiRequest<{ prompt_id?: string; node_errors?: Record<string, unknown>; error?: string }>(target, "post", "/prompt", { prompt: graph, client_id: COMFYUI_CLIENT_ID }, signal);
     } catch (err) {
         const data = (err as { response?: { data?: unknown } })?.response?.data;
         if (data === undefined) throw err; // abort / network — propagate unchanged
