@@ -49,6 +49,9 @@ export function detectWorkflowFormat(json: unknown): WorkflowFormat {
 type GraphNode = { id: number; type: string; inputs?: Array<{ name: string; link: number | null }>; widgets_values?: unknown[] };
 type GraphJson = { nodes?: GraphNode[]; links?: Array<[number, number, number, number, number, string]> };
 
+/** Frontend-only annotation nodes — never executed and never wired into the graph; ComfyUI omits them at submit. */
+const ANNOTATION_NODE_TYPES = new Set(["Note", "MarkdownNote"]);
+
 /** Names of widget (non-connection) inputs for a node type, in object_info order (required then optional). */
 function widgetInputNames(def: ComfyuiObjectInfo[string] | undefined, slotNames: Set<string>): string[] {
     const names: string[] = [];
@@ -76,6 +79,9 @@ export function convertGraphToPrompt(graph: GraphJson, objectInfo: ComfyuiObject
     const errors: string[] = [];
 
     for (const node of graph.nodes || []) {
+        // Skip annotation nodes silently (see ANNOTATION_NODE_TYPES) so a workflow isn't rejected for
+        // carrying a comment. Other unknown types still error below → caller falls back to API import.
+        if (ANNOTATION_NODE_TYPES.has(node.type)) continue;
         const def = objectInfo[node.type];
         if (!def) {
             errors.push(i18n.t("config.comfyui.unknownNodeType", { id: node.id, type: node.type }));
