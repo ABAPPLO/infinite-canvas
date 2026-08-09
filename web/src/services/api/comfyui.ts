@@ -174,6 +174,22 @@ export function parseComfyuiPromptNodes(promptJson: Record<string, { class_type:
     return { candidates, defaults };
 }
 
+export type PromptNodeInventoryItem = { id: string; classType: string; inputs: string[] };
+
+/**
+ * Inventory every node in a prompt-format workflow with no type filtering, so the IO modal can offer
+ * manual node/slot selection even when auto-detection (parseComfyuiPromptNodes) recognises nothing —
+ * e.g. custom loaders or output nodes outside the hardcoded type sets. Inputs are the node's input
+ * names (connection slots and widgets alike) taken from the prompt JSON keys.
+ */
+export function inventoryPromptNodes(promptJson: Record<string, any>): PromptNodeInventoryItem[] {
+    return Object.entries(promptJson).map(([id, node]) => ({
+        id,
+        classType: typeof node?.class_type === "string" ? node.class_type : "",
+        inputs: node && typeof node.inputs === "object" ? Object.keys(node.inputs) : [],
+    }));
+}
+
 export type ComfyuiWorkflowSummary = { name: string; promptJson: Record<string, any>; ok: boolean; reason?: string; source?: "server" | "import" };
 
 type UserdataEntry = { path?: string; name?: string; type?: string };

@@ -2,7 +2,7 @@ import { Button, Modal, Select, Space, Typography } from "antd";
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-import { parseComfyuiPromptNodes } from "@/services/api/comfyui";
+import { inventoryPromptNodes, parseComfyuiPromptNodes } from "@/services/api/comfyui";
 import type { ComfyuiIoMapping, ModelCapability } from "@/stores/use-config-store";
 
 type Props = {
@@ -30,8 +30,14 @@ export function ComfyuiIoModal({ open, promptJson, capability, initial, onSave, 
     }));
     const patch = (partial: Partial<ComfyuiIoMapping>) => setValue((prev) => ({ ...prev, ...partial }));
 
+    // Full node inventory (no type filtering): manual mapping is never gated on auto-detection, so
+    // custom loaders / output nodes that parseComfyuiPromptNodes ignores remain selectable.
+    const inventory = useMemo(() => inventoryPromptNodes(promptJson), [promptJson]);
+    const textOptions = inventory.flatMap((n) => n.inputs.map((input) => ({ label: `${n.id} · ${n.classType}.${input}`, value: `${n.id}::${input}` })));
+    const outputOptions = inventory.map((n) => ({ label: `${n.id} · ${n.classType}`, value: n.id }));
+
     const selectedRefKeys = new Set((value.referenceImages ?? []).map((s) => `${s.node}::${s.input}`));
-    const addableReferences = candidates.referenceImages.filter((entry) => !selectedRefKeys.has(`${entry.id}::${entry.input}`));
+    const addableReferences = textOptions.filter((opt) => !selectedRefKeys.has(opt.value));
 
     const moveReference = (index: number, dir: -1 | 1) =>
         setValue((prev) => {
@@ -46,10 +52,7 @@ export function ComfyuiIoModal({ open, promptJson, capability, initial, onSave, 
     const addReference = (slot: { node: string; input: string }) =>
         setValue((prev) => ({ ...prev, referenceImages: [...(prev.referenceImages ?? []), slot] }));
 
-    const textOptions = candidates.textInputs.map((entry) => ({ label: `${entry.id} · ${entry.classType}.${entry.input}`, value: `${entry.id}::${entry.input}` }));
-    const sizeOptions = (list: Array<{ id: string; input: string }>) => list.map((entry) => ({ label: `${entry.id} · ${entry.input}`, value: `${entry.id}::${entry.input}` }));
-    const outputOptions = candidates.outputs.filter((o) => o.capability === capability).map((o) => ({ label: `${o.id} · ${o.classType}`, value: o.id }));
-    void sizeOptions; // reserved for a future size-mapping panel (P1)
+    void capability; // capability filtering is dropped in manual mode; prop retained for callers
 
     const decodeSlot = (encoded: string) => {
         const [node, input] = encoded.split("::");
@@ -62,39 +65,36 @@ export function ComfyuiIoModal({ open, promptJson, capability, initial, onSave, 
             <Space direction="vertical" size="middle" className="w-full">
                 <Typography.Text type="secondary">{t("config.comfyui.ioHint")}</Typography.Text>
                 <Field label={t("config.comfyui.promptNode")}>
-                    <Select className="w-full" options={textOptions} value={encodeSlot(value.promptText)} onChange={(v) => patch({ promptText: decodeSlot(v) })} />
+                    <Select className="w-full" showSearch options={textOptions} value={encodeSlot(value.promptText)} onChange={(v) => patch({ promptText: decodeSlot(v) })} />
                 </Field>
                 <Field label={t("config.comfyui.negativeNode")}>
-                    <Select className="w-full" options={[{ label: t("config.comfyui.none"), value: SLOT_UNDEFINED }, ...textOptions]} value={encodeSlot(value.negativeText)} onChange={(v) => patch({ negativeText: v === SLOT_UNDEFINED ? undefined : decodeSlot(v) })} />
+                    <Select className="w-full" showSearch options={[{ label: t("config.comfyui.none"), value: SLOT_UNDEFINED }, ...textOptions]} value={encodeSlot(value.negativeText)} onChange={(v) => patch({ negativeText: v === SLOT_UNDEFINED ? undefined : decodeSlot(v) })} />
                 </Field>
-                {candidates.referenceImages.length > 0 && (
-                    <Field label={t("config.comfyui.referenceNodes")}>
-                        <Space direction="vertical" size="small" className="w-full">
-                            <Typography.Text type="secondary" className="text-xs">{t("config.comfyui.referenceOrderHint")}</Typography.Text>
-                            {value.referenceImages?.map((slot, index) => (
-                                <div key={`${slot.node}::${slot.input}`} className="flex items-center gap-2">
-                                    <span className="flex-1 truncate text-sm">{slot.node} · LoadImage</span>
-                                    <Button size="small" disabled={index === 0} onClick={() => moveReference(index, -1)}>↑</Button>
-                                    <Button size="small" disabled={index === (value.referenceImages?.length ?? 0) - 1} onClick={() => moveReference(index, 1)}>↓</Button>
-                                    <Button size="small" danger onClick={() => removeReference(index)}>✕</Button>
-                                </div>
-                            ))}
-                            {addableReferences.length > 0 && (
-                                <Select
-                                    className="w-full"
-                                    placeholder={t("config.comfyui.referenceAdd")}
-                                    value={undefined}
-                                    options={addableReferences.map((entry) => ({ label: `${entry.id} · LoadImage`, value: `${entry.id}::${entry.input}` }))}
-                                    onChange={(v) => {
-                                        if (typeof v === "string") addReference(decodeSlot(v));
-                                    }}
-                                />
-                            )}
-                        </Space>
-                    </Field>
-                )}
+                <Field label={t("config.comfyui.referenceNodes")}>
+                    <Space direction="vertical" size="small" className="w-full">
+                        <Typography.Text type="secondary" className="text-xs">{t("config.comfyui.referenceOrderHint")}</Typography.Text>
+                        {value.referenceImages?.map((slot, index) => (
+                            <div key={`${slot.node}::${slot.input}`} className="flex items-center gap-2">
+                                <span className="flex-1 truncate text-sm">{slot.node} · {slot.input}</span>
+                                <Button size="small" disabled={index === 0} onClick={() => moveReference(index, -1)}>↑</Button>
+                                <Button size="small" disabled={index === (value.referenceImages?.length ?? 0) - 1} onClick={() => moveReference(index, 1)}>↓</Button>
+                                <Button size="small" danger onClick={() => removeReference(index)}>✕</Button>
+                            </div>
+                        ))}
+                        <Select
+                            className="w-full"
+                            showSearch
+                            placeholder={t("config.comfyui.referenceAdd")}
+                            value={undefined}
+                            options={addableReferences}
+                            onChange={(v) => {
+                                if (typeof v === "string") addReference(decodeSlot(v));
+                            }}
+                        />
+                    </Space>
+                </Field>
                 <Field label={t("config.comfyui.outputNode")}>
-                    <Select className="w-full" options={outputOptions} value={value.outputNode} onChange={(v) => patch({ outputNode: v })} />
+                    <Select className="w-full" showSearch options={outputOptions} value={value.outputNode} onChange={(v) => patch({ outputNode: v })} />
                 </Field>
             </Space>
         </Modal>
