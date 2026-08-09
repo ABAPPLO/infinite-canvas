@@ -468,10 +468,15 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     }
     const promptId = submit.prompt_id;
 
-    const deadline = Date.now() + 300_000;
+    // ComfyUI only writes a /history entry once a prompt finishes (success or error); while it runs the
+    // job lives in /queue. So poll /history for the result and keep refreshing the patience window while
+    // the job is still queued — heavy models on --lowvram can run for many minutes, and a fixed short
+    // deadline would abort jobs ComfyUI is still actively processing.
+    let lastActive = Date.now();
+    const stalledTimeout = 300_000; // absent from the queue for 5 min → presume it died
     for (;;) {
         if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        const history = await comfyuiRequest<Record<string, { outputs?: Record<string, Record<string, ComfyuiOutputImage[]>>; status?: { completed?: boolean } }>>(target, "get", `/history/${promptId}`, undefined, signal);
+        const history = await comfyuiRequest<Record<string, { outputs?: Record<string, Record<string, ComfyuiOutputImage[]>>; status?: { completed?: boolean; status_str?: string } }>>(target, "get", `/history/${promptId}`, undefined, signal);
         const entry = history[promptId];
         if (entry?.status?.completed) {
             const nodeOutput = entry.outputs?.[io.outputNode];
@@ -484,7 +489,16 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
             if (!entries.length) throw new Error(i18n.t("config.comfyui.noOutput"));
             return Promise.all(entries.map((image) => fetchView(target, image, signal)));
         }
-        if (Date.now() >= deadline) throw new Error(i18n.t("config.comfyui.pollTimeout"));
-        await sleep(1000, signal);
+        // A history entry that didn't reach completed means execution errored — surface ComfyUI's status
+        // instead of making the user wait out the stall timer.
+        if (entry?.status && entry.status.completed === false) {
+            throw new Error(`${i18n.t("config.comfyui.submitFailed")}: ${entry.status.status_str || "execution failed"}`);
+        }
+        // Still pending: refresh the patience window only while the job remains alive in the queue.
+        const queue = await comfyuiRequest<{ queue_running?: unknown[]; queue_pending?: unknown[] }>(target, "get", "/queue", undefined, signal);
+        const inQueue = [...(queue.queue_running ?? []), ...(queue.queue_pending ?? [])].some((item) => JSON.stringify(item).includes(promptId));
+        if (inQueue) lastActive = Date.now();
+        else if (Date.now() - lastActive > stalledTimeout) throw new Error(i18n.t("config.comfyui.pollTimeout"));
+        await sleep(2000, signal);
     }
 }
