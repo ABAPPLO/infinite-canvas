@@ -35,6 +35,8 @@ export function ModelSelectModal({
     const isComfyui = channel?.apiFormat === "comfyui";
     const [comfyuiWorkflows, setComfyuiWorkflows] = useState<ComfyuiWorkflowSummary[]>([]);
     const comfyuiMeta = useRef<Record<string, { promptJson: Record<string, any>; source?: "server" | "import" }>>({});
+    // Name → summary lookup so the list can grey out server-fetched workflows that failed graph→prompt conversion.
+    const comfyuiWorkflowByName = useMemo(() => new Map(comfyuiWorkflows.map((w) => [w.name, w])), [comfyuiWorkflows]);
 
     useEffect(() => {
         if (!open) return;
@@ -63,10 +65,24 @@ export function ModelSelectModal({
             return next;
         });
 
+    // Server-fetched workflows that failed conversion (missing custom nodes etc.) are shown greyed out and
+    // excluded from selection: picking one would create a model with no usable prompt graph. Manually imported
+    // workflows are exempt (a partial import is still configurable in the IO modal).
+    const isWorkflowDisabled = (name: string): boolean => {
+        const summary = comfyuiWorkflowByName.get(name);
+        return !!summary && summary.source === "server" && !summary.ok;
+    };
+
     const selectVisible = (checked: boolean) =>
         setSelected((current) => {
             const next = new Set(current);
-            visibleList.forEach((name) => (checked ? next.add(name) : next.delete(name)));
+            visibleList.forEach((name) => {
+                if (checked) {
+                    if (!isWorkflowDisabled(name)) next.add(name);
+                } else {
+                    next.delete(name);
+                }
+            });
             return next;
         });
 
@@ -91,10 +107,10 @@ export function ModelSelectModal({
                 const workflows = await fetchComfyuiWorkflows(channel.baseUrl);
                 comfyuiMeta.current = Object.fromEntries(workflows.filter((w) => w.ok).map((w) => [w.name, { promptJson: w.promptJson, source: w.source }]));
                 setComfyuiWorkflows(workflows);
-                setFetched(workflows.filter((w) => w.ok).map((w) => w.name));
+                setFetched(workflows.map((w) => w.name));
                 setActiveTab("new");
                 const ready = workflows.filter((w) => w.ok).length;
-                message.success(t("config.modelSelect.fetched", { count: ready }));
+                message.success(t("config.modelSelect.fetched", { count: workflows.length }));
                 if (!ready) message.warning(t("config.comfyui.importHint"));
             } else {
                 const models = await fetchChannelModels(channel);
@@ -194,13 +210,17 @@ export function ModelSelectModal({
 
             {visibleList.length ? (
                 <div className="grid grid-cols-1 gap-x-8 gap-y-3 md:grid-cols-2">
-                    {visibleList.map((name) => (
-                        <Checkbox key={name} checked={selected.has(name)} onChange={(event) => toggle(name, event.target.checked)}>
-                            <span className="truncate" title={name}>
-                                {name}
-                            </span>
-                        </Checkbox>
-                    ))}
+                    {visibleList.map((name) => {
+                        const disabled = isWorkflowDisabled(name);
+                        const reason = comfyuiWorkflowByName.get(name)?.reason;
+                        return (
+                            <Checkbox key={name} checked={selected.has(name)} disabled={disabled} onChange={(event) => toggle(name, event.target.checked)}>
+                                <span className={`truncate ${disabled ? "text-stone-400" : ""}`} title={disabled && reason ? reason : name}>
+                                    {name}
+                                </span>
+                            </Checkbox>
+                        );
+                    })}
                 </div>
             ) : (
                 <div className="py-8 text-center text-sm text-stone-500">{t(activeTab === "new" ? "config.modelSelect.fetchedEmpty" : "config.modelSelect.existingEmpty")}</div>
