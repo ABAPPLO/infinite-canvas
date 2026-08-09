@@ -1,5 +1,5 @@
 import { App, Button, Checkbox, Input, Modal, Tabs, Upload } from "antd";
-import { RefreshCw, Search, Upload as UploadIcon } from "lucide-react";
+import { AlertTriangle, RefreshCw, Search, Upload as UploadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -35,7 +35,7 @@ export function ModelSelectModal({
     const isComfyui = channel?.apiFormat === "comfyui";
     const [comfyuiWorkflows, setComfyuiWorkflows] = useState<ComfyuiWorkflowSummary[]>([]);
     const comfyuiMeta = useRef<Record<string, { promptJson: Record<string, any>; source?: "server" | "import" }>>({});
-    // Name → summary lookup so the list can grey out server-fetched workflows that failed graph→prompt conversion.
+    // Name → summary lookup so the list can flag workflows whose graph→prompt conversion failed.
     const comfyuiWorkflowByName = useMemo(() => new Map(comfyuiWorkflows.map((w) => [w.name, w])), [comfyuiWorkflows]);
 
     useEffect(() => {
@@ -65,24 +65,18 @@ export function ModelSelectModal({
             return next;
         });
 
-    // Server-fetched workflows that failed conversion (missing custom nodes etc.) are shown greyed out and
-    // excluded from selection: picking one would create a model with no usable prompt graph. Manually imported
-    // workflows are exempt (a partial import is still configurable in the IO modal).
-    const isWorkflowDisabled = (name: string): boolean => {
+    // A workflow whose graph→prompt conversion failed (missing custom nodes, frontend-only Reroute/SetNode/
+    // subgraphs, etc.) is still selectable — its incomplete promptJson is persisted so it can at least open in
+    // the IO modal — but flagged with a warning marker so it's clear generation will likely fail at submit.
+    const isConversionFailed = (name: string): boolean => {
         const summary = comfyuiWorkflowByName.get(name);
-        return !!summary && summary.source === "server" && !summary.ok;
+        return !!summary && !summary.ok;
     };
 
     const selectVisible = (checked: boolean) =>
         setSelected((current) => {
             const next = new Set(current);
-            visibleList.forEach((name) => {
-                if (checked) {
-                    if (!isWorkflowDisabled(name)) next.add(name);
-                } else {
-                    next.delete(name);
-                }
-            });
+            visibleList.forEach((name) => (checked ? next.add(name) : next.delete(name)));
             return next;
         });
 
@@ -105,7 +99,7 @@ export function ModelSelectModal({
         try {
             if (isComfyui) {
                 const workflows = await fetchComfyuiWorkflows(channel.baseUrl);
-                comfyuiMeta.current = Object.fromEntries(workflows.filter((w) => w.ok).map((w) => [w.name, { promptJson: w.promptJson, source: w.source }]));
+                comfyuiMeta.current = Object.fromEntries(workflows.map((w) => [w.name, { promptJson: w.promptJson, source: w.source }]));
                 setComfyuiWorkflows(workflows);
                 setFetched(workflows.map((w) => w.name));
                 setActiveTab("new");
@@ -211,13 +205,20 @@ export function ModelSelectModal({
             {visibleList.length ? (
                 <div className="grid grid-cols-1 gap-x-8 gap-y-3 md:grid-cols-2">
                     {visibleList.map((name) => {
-                        const disabled = isWorkflowDisabled(name);
+                        const warning = isConversionFailed(name);
                         const reason = comfyuiWorkflowByName.get(name)?.reason;
                         return (
-                            <Checkbox key={name} checked={selected.has(name)} disabled={disabled} onChange={(event) => toggle(name, event.target.checked)}>
-                                <span className={`truncate ${disabled ? "text-stone-400" : ""}`} title={disabled && reason ? reason : name}>
-                                    {name}
-                                </span>
+                            <Checkbox key={name} checked={selected.has(name)} onChange={(event) => toggle(name, event.target.checked)}>
+                                {warning ? (
+                                    <span className="inline-flex items-center gap-1 text-amber-600" title={reason || name}>
+                                        <AlertTriangle className="size-3.5 shrink-0" />
+                                        <span className="truncate">{name}</span>
+                                    </span>
+                                ) : (
+                                    <span className="truncate" title={name}>
+                                        {name}
+                                    </span>
+                                )}
                             </Checkbox>
                         );
                     })}
