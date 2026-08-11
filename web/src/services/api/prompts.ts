@@ -224,3 +224,24 @@ export function formatPromptDate(value: string, locale?: string) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(locale, { year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
+
+export async function removePromptsByTags(tags: string[]) {
+    const normalized = tags.map((t) => t.toLowerCase());
+    const keys = await promptCacheStore.keys();
+    let removed = 0;
+    for (const key of keys) {
+        const cache = await promptCacheStore.getItem<SourceCache>(key);
+        if (!cache?.items?.length) continue;
+        const before = cache.items.length;
+        cache.items = cache.items.filter(
+            (item) => !item.tags?.some((tag) => normalized.includes(tag.toLowerCase())),
+        );
+        const after = cache.items.length;
+        if (after < before) {
+            removed += before - after;
+            cache.count = after;
+            await promptCacheStore.setItem(key, cache);
+        }
+    }
+    return { removed };
+}
