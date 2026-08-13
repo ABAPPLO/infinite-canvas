@@ -15,3 +15,6 @@ web/public/plugins
 plugins/canvas/*/dist
 plugins/canvas/*/node_modules
 web/public/plugins
+
+# CodeGraph local index
+.codegraph/
