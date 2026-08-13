@@ -2,7 +2,7 @@ import { Button, Input, Modal, Select, Space, Spin, Typography } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-import { buildComfyuiNodeInventory, getObjectInfo, type ComfyuiObjectInfo } from "@/services/api/comfyui";
+import { buildComfyuiNodeInventory, buildLinkableTypes, getObjectInfo, isWidgetInput, type ComfyuiObjectInfo } from "@/services/api/comfyui";
 import type { ComfyuiIoMapping, ComfyuiParamOverride, ComfyuiParamSource, ModelCapability } from "@/stores/use-config-store";
 
 type Props = {
@@ -91,21 +91,41 @@ export function ComfyuiIoModal({ open, target, promptJson, capability, initial, 
     const widthOptions = (inventory?.width ?? []).map((s) => ({ label: `${s.node} · ${s.classType}.${s.input}`, value: `${s.node}::${s.input}` }));
     const heightOptions = (inventory?.height ?? []).map((s) => ({ label: `${s.node} · ${s.classType}.${s.input}`, value: `${s.node}::${s.input}` }));
     const seedOptions = (inventory?.seed ?? []).map((s) => ({ label: `${s.node} · ${s.classType}.${s.input}`, value: `${s.node}::${s.input}` }));
-    // Param targets: every node input known to object_info, so any canvas setting can map to any node parameter.
+    // Param targets: widget inputs only (primitives/combos). Connection-typed inputs
+    // (MODEL/CLIP/IMAGE/LATENT/VAE/CONDITIONING…) are wired links — writing a scalar canvas value
+    // into them via setNodeInput would overwrite [originNode, slot] and sever the connection, so they
+    // are excluded from the dropdown entirely.
     const paramTargetOptions = useMemo(() => {
         if (!objectInfo) return [] as Array<{ label: string; value: string }>;
+        const linkableTypes = buildLinkableTypes(objectInfo);
         const opts: Array<{ label: string; value: string }> = [];
+        const seen = new Set<string>();
         for (const [id, node] of Object.entries(promptJson)) {
             const classType = typeof node?.class_type === "string" ? node.class_type : "";
             const def = objectInfo[classType];
             if (!def) continue;
             for (const group of [def.input?.required, def.input?.optional]) {
                 if (!group) continue;
-                for (const name of Object.keys(group)) opts.push({ label: `${id} · ${classType}.${name}`, value: `${id}::${name}` });
+                for (const [name, spec] of Object.entries(group)) {
+                    if (!isWidgetInput(spec, linkableTypes)) continue;
+                    const value = `${id}::${name}`;
+                    if (seen.has(value)) continue;
+                    seen.add(value);
+                    opts.push({ label: `${id} · ${classType}.${name}`, value });
+                }
+            }
+        }
+        // Keep an already-selected (possibly legacy/now-filtered) target selectable so an existing
+        // binding still renders its label instead of silently vanishing from the dropdown.
+        for (const p of value.params ?? []) {
+            const v = `${p.node}::${p.input}`;
+            if (p.node && p.input && !seen.has(v)) {
+                seen.add(v);
+                opts.push({ label: `${p.node} · ${p.input}`, value: v });
             }
         }
         return opts;
-    }, [promptJson, objectInfo]);
+    }, [promptJson, objectInfo, value.params]);
 
     const selectedRefKeys = new Set((value.referenceImages ?? []).map((s) => `${s.node}::${s.input}`));
     const addableReferences = refOptions.filter((opt) => !selectedRefKeys.has(opt.value));

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
++ [新增] 前端页面渲染崩溃不再整页白屏：在路由内容区加 ErrorBoundary，页面渲染抛错时显示「重试 / 返回首页」兜底页，顶栏与 Agent 面板保持可用，无需强制刷新即可恢复（确定性错误点「返回首页」卸载崩溃路由）。
++ [修复] ComfyUI 参数映射下拉列出连接类输入（MODEL/CLIP/IMAGE/LATENT/VAE 等），用户若把画布参数映射到这些槽位会覆盖连接值、破坏图结构；改为只列出 widget 类输入（基础类型/combo），已选的历史绑定仍保留可选项避免静默消失。
++ [修复] 视频工作台生成过程无法中断：任务创建与轮询未传入取消信号，ComfyUI 视频渲染（runComfyui 轮询 /history 可达数分钟）期间点停止无效；新增 AbortController 贯穿创建与轮询，运行中显示「停止」按钮，离开页面也会中止后台轮询。
++ [修复] ComfyUI/插件视频任务在页面刷新后被误报为失效：结果仅存于内存 Map，刷新后丢失，对已服务端完成的任务返回「已失效，请重新生成」；改为将结果同时写入 localforage，刷新后恢复轮询仍能取回已完成结果；区分主动停止与卸载中断，卸载时保留 pending 日志以便刷新后续接。
++ [修复] ComfyUI 生成报错被当作成功返回：ComfyUI 在任务成功或失败时都会写 /history 且 status.completed 均为 true，旧逻辑只看 completed 即返回，导致失败任务被当成成功、可能返回半截/错误图片并吞掉错误信息；改为按 status_str 判定失败并透出 status.messages 中的错误详情。
++ [修复] ComfyUI 提交前剪枝会误删已注入的映射节点：按输出节点反向剪枝会丢弃不在输出通路上的节点，导致映射到这些节点的提示词/参考图/参数被静默丢弃、结果不受用户配置影响；改为检测被剪掉的已注入节点并抛出配置错误，提示用户该映射未接入输出。
 + [修复] ComfyUI graph 格式工作流转换丢失 widget 输入（seed/steps/cfg/clip_name/vae_name 等），导致提交报「required input missing」：改为按 object_info 类型判定 widget（基础类型/combo/非连接类型），并在 seed 后跳过 control_after_generate，自定义节点的非标准 combo 类型也能正确识别。
 + [修复] ComfyUI 转换把 rgthree 等可变长连接输入（如 ComfyMathExpression 的 values，类型 COMFY_AUTOGROW）误判为控件，导致含表达式节点的工作流（minimaxh3）转换失败、IO 面板找不到提示词输入：改为按 `name.*` 接线变体识别可变长基名并视为连接槽。
 + [修复] ComfyUI 工作流里未连通的游离节点（如缺必填 image 输入的 ImageScale 死分支）会被原样提交导致校验失败：提交前按输出节点反向剪枝，仅保留实际产出所需的节点。

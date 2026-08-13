@@ -27,6 +27,10 @@ export default {
         durationMinutes: "{{minutes}}分{{seconds}}秒",
         durationSeconds: "{{seconds}}秒",
         imageReadFailed: "读取图片失败",
+        retry: "重试",
+        backHome: "返回首页",
+        renderErrorTitle: "页面出了点问题",
+        renderErrorHint: "渲染时发生错误。可以重试，或返回首页继续使用。",
     },
     settingsPanels: {
         common: { auto: "自动", low: "低", medium: "中", high: "高", xhigh: "极高" },
@@ -345,6 +349,8 @@ export default {
         busy: "视频工作台已有任务正在运行",
         generated: "视频已生成",
         timeout: "视频生成超时，请稍后重试",
+        stop: "停止",
+        canceled: "已取消",
         resultTitle: "生成视频",
         source: "视频创作台",
         empty: "还没有生成视频",
@@ -1095,6 +1101,8 @@ export default {
             viewFailed: "读取 ComfyUI 生成图片失败",
             pollTimeout: "ComfyUI 生成超时，请稍后重试（--lowvram 首帧较慢）。",
             submitFailed: "ComfyUI 工作流提交失败",
+            jobFailed: "ComfyUI 执行失败：{{detail}}",
+            mappedNodeUnreachable: "映射的节点 {{id}} 不在通往输出节点的通路上，注入的值不会影响输出，请检查输入输出节点配置。",
         },
         protocols: {
             ark: "火山方舟",

@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, LoaderCircle, Music2, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, VideoIcon } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, LoaderCircle, Music2, Plus, SlidersHorizontal, Sparkles, Square, Trash2, Upload, VideoIcon } from "lucide-react";
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Input, Modal, Tag, Typography } from "antd";
 import localforage from "localforage";
@@ -15,7 +15,7 @@ import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio, seedanceReferenceLabel, seedanceVideoReferenceError, seedanceVideoReferenceHint, SEEDANCE_REFERENCE_LIMITS, SEEDANCE_VIDEO_MIME_TYPES } from "@/lib/seedance-video";
 import { deleteStoredMedia, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
-import { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
+import { createVideoGenerationTask, deleteVideoResult, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -76,6 +76,14 @@ export default function VideoPage() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dragDepthRef = useRef(0);
     const activeLogIdsRef = useRef<Set<string>>(new Set());
+    // AbortController for the in-flight generation (task creation + polling). Null when idle. Lets the
+    // Stop button and component unmount interrupt a long ComfyUI render mid-flight instead of waiting
+    // for the multi-minute poll to finish.
+    const abortRef = useRef<AbortController | null>(null);
+    // Distinguishes a user's explicit Stop from an unmount/reload abort. On unmount we leave the log
+    // pending so a ComfyUI job whose result was already stashed can still resume after reload; on an
+    // explicit stop we record the log as canceled and drop the stashed result.
+    const userStoppingRef = useRef(false);
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
     const updateConfig = useConfigStore((state) => state.updateConfig);
@@ -210,19 +218,40 @@ export default function VideoPage() {
         setResults([{ id: nanoid(), status: "pending" }]);
         const batchStartedAt = performance.now();
         setStartedAt(batchStartedAt);
+        // One controller spans task creation + polling so the Stop button can abort a long ComfyUI
+        // render (runComfyui polls /history for minutes) mid-flight, not just between polls.
+        userStoppingRef.current = false;
+        const controller = new AbortController();
+        abortRef.current = controller;
         try {
-            const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references, snapshot.videoReferences, snapshot.audioReferences);
+            const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references, snapshot.videoReferences, snapshot.audioReferences, { signal: controller.signal });
             const log = buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, videoReferences: snapshot.videoReferences, audioReferences: snapshot.audioReferences, durationMs: 0, status: "pending", task });
             await saveLog(log, false);
-            void pollGenerationLog(log, snapshot.config, agentTaskId);
+            void pollGenerationLog(log, snapshot.config, agentTaskId, controller.signal);
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
+            const aborted = (error instanceof DOMException && error.name === "AbortError") || controller.signal.aborted;
+            // Unmount/reload during task creation: leave no spurious failed log — a stashed result
+            // (if any) is recovered on resume. An explicit Stop records a canceled log for feedback.
+            if (aborted && !userStoppingRef.current) return;
+            const errorMessage = aborted ? t("videoWorkbench.canceled") : error instanceof Error ? error.message : t("workbench.generationFailed");
             setResults([{ id: nanoid(), status: "failed", error: errorMessage }]);
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
             await saveLog(buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, videoReferences: snapshot.videoReferences, audioReferences: snapshot.audioReferences, durationMs: performance.now() - batchStartedAt, status: "failed", error: errorMessage }));
-            message.error(errorMessage);
+            if (!aborted) message.error(errorMessage);
             setRunning(false);
         }
+    };
+
+    /** Abort the in-flight generation from the Stop button. The aborted signal rejects the active
+     *  create/poll request; pollGenerationLog's catch records a "canceled" log and drops the stash.
+     *  (Unmount uses a separate effect that aborts WITHOUT this flag, so a reload leaves the log
+     *  pending and recoverable rather than marking it canceled.) */
+    const stopGeneration = () => {
+        userStoppingRef.current = true;
+        abortRef.current?.abort();
+        abortRef.current = null;
+        setRunning(false);
+        setStartedAt(0);
     };
 
     // Handle video-generation commands from the Agent panel by setting the prompt and optionally starting generation.
@@ -246,6 +275,9 @@ export default function VideoPage() {
         void generate();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoRunToken]);
+
+    // Abort any in-flight generation when the page unmounts so a background poll doesn't outlive the UI.
+    useEffect(() => () => abortRef.current?.abort(), []);
 
     const buildRequestSnapshot = () => {
         const text = prompt.trim();
@@ -343,16 +375,22 @@ export default function VideoPage() {
         }
     };
 
-    const pollGenerationLog = async (log: GenerationLog, configOverride?: AiConfig, agentTaskId?: string) => {
+    const pollGenerationLog = async (log: GenerationLog, configOverride?: AiConfig, agentTaskId?: string, signal?: AbortSignal) => {
         if (!log.task || activeLogIdsRef.current.has(log.id)) return;
         activeLogIdsRef.current.add(log.id);
+        // Resumed logs (page load) have no caller-supplied signal; give them their own controller so
+        // Stop/unmount can interrupt their polling too.
+        const controller = signal ? null : new AbortController();
+        if (controller) abortRef.current = controller;
+        const pollSignal = signal ?? controller!.signal;
         setRunning(true);
         setStartedAt((value) => value || performance.now());
         setResults((value) => (value.length ? value : [{ id: log.id, status: "pending" }]));
         const taskConfig = buildVideoConfig({ ...effectiveConfig, ...log.config }, log.task.model || log.model);
         try {
             for (let attempt = 0; attempt < 120; attempt += 1) {
-                const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task);
+                if (pollSignal.aborted) throw new DOMException("Aborted", "AbortError");
+                const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task, { signal: pollSignal });
                 if (state.status === "completed") {
                     const stored = await storeGeneratedVideo(state.result);
                     const nextVideo: GeneratedVideo = {
@@ -368,21 +406,30 @@ export default function VideoPage() {
                     setResults([{ id: nextVideo.id, status: "success", video: nextVideo }]);
                     if (agentTaskId) updateAgentTask(agentTaskId, { status: "succeeded", successCount: 1, failCount: 0, error: undefined });
                     await saveLog({ ...log, status: "success", durationMs: nextVideo.durationMs, video: nextVideo, error: undefined });
+                    void deleteVideoResult(log.task.id);
                     message.success(t("videoWorkbench.generated"));
                     return;
                 }
                 if (state.status === "failed") throw new Error(state.error);
                 if (attempt === 119) throw new Error(t("videoWorkbench.timeout"));
-                await delay(log.task.provider === "seedance" ? 5000 : 2500);
+                await delay(log.task.provider === "seedance" ? 5000 : 2500, pollSignal);
             }
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
+            const aborted = (error instanceof DOMException && error.name === "AbortError") || pollSignal.aborted;
+            if (aborted && !userStoppingRef.current) {
+                // Unmount/reload abort: leave the log pending so a stashed ComfyUI/plugin result can
+                // still be resolved on the next load. Don't touch the stash or mark the task failed.
+                return;
+            }
+            const errorMessage = aborted ? t("videoWorkbench.canceled") : error instanceof Error ? error.message : t("workbench.generationFailed");
             setResults([{ id: log.id, status: "failed", error: errorMessage }]);
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
             await saveLog({ ...log, status: "failed", durationMs: Date.now() - log.createdAt, error: errorMessage });
-            message.error(errorMessage);
+            void deleteVideoResult(log.task.id);
+            if (!aborted) message.error(errorMessage);
         } finally {
             activeLogIdsRef.current.delete(log.id);
+            if (controller) abortRef.current = null;
             if (!activeLogIdsRef.current.size) {
                 setRunning(false);
                 setStartedAt(0);
@@ -559,10 +606,15 @@ export default function VideoPage() {
                             </div>
                         </div>
 
-                        <div className="mt-auto pt-6">
+                        <div className="mt-auto space-y-2 pt-6">
                             <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
                                 {t("workbench.generate")}
                             </Button>
+                            {running ? (
+                                <Button danger size="large" block icon={<Square className="size-4" />} onClick={stopGeneration}>
+                                    {t("videoWorkbench.stop")}
+                                </Button>
+                            ) : null}
                         </div>
                     </div>
 
@@ -941,6 +993,20 @@ function normalizeResolution(value: string) {
     return normalizeVideoResolutionValue(value);
 }
 
-function delay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+        }
+        const timer = setTimeout(resolve, ms);
+        signal?.addEventListener(
+            "abort",
+            () => {
+                clearTimeout(timer);
+                reject(new DOMException("Aborted", "AbortError"));
+            },
+            { once: true },
+        );
+    });
 }

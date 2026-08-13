@@ -1,4 +1,5 @@
 import axios from "axios";
+import localforage from "localforage";
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
@@ -32,8 +33,49 @@ export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: stri
 export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "plugin" | "comfyui"; model: string };
 export type VideoGenerationTaskState = { status: "pending" } | { status: "completed"; result: VideoGenerationResult } | { status: "failed"; error: string };
 
-/** Results for scripted (plugin) video models, which run their own create+poll in one shot at task creation. */
+/** Results for scripted (plugin) video models and ComfyUI video workflows, which run their own
+ *  create+poll in one shot at task creation — the result is ready before the first poll. Kept in an
+ *  in-memory map for the fast path and mirrored to localforage so a page reload mid-task still
+ *  resolves a completed job instead of falsely reporting it expired (the in-memory map is wiped on
+ *  reload; ComfyUI/plugin providers have no server-side task id to re-poll against). */
 const pluginVideoResults = new Map<string, VideoGenerationResult>();
+const videoResultStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_results" });
+
+async function stashVideoResult(id: string, result: VideoGenerationResult) {
+    pluginVideoResults.set(id, result);
+    try {
+        await videoResultStore.setItem(id, result);
+    } catch {
+        // A localforage write failure (e.g. quota) must not break the in-session generation — the
+        // in-memory copy still serves this session, only reload-resume would be affected.
+    }
+}
+
+async function readVideoResult(id: string): Promise<VideoGenerationResult | undefined> {
+    const cached = pluginVideoResults.get(id);
+    if (cached) return cached;
+    try {
+        const stored = await videoResultStore.getItem<VideoGenerationResult>(id);
+        if (stored) {
+            pluginVideoResults.set(id, stored); // rehydrate so later polls skip IndexedDB
+            return stored;
+        }
+    } catch {
+        // ignore read failure — falls through to the expired result below
+    }
+    return undefined;
+}
+
+/** Drop a task's stashed result once it has reached a terminal state (stored to media storage on
+ *  success, or abandoned on failure) so neither the map nor localforage grows without bound. */
+export async function deleteVideoResult(id: string) {
+    pluginVideoResults.delete(id);
+    try {
+        await videoResultStore.removeItem(id);
+    } catch {
+        // best-effort
+    }
+}
 
 function aiApiUrl(config: AiConfig, path: string) {
     return buildApiUrl(config.baseUrl, path);
@@ -78,7 +120,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
 
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
     if (task.provider === "plugin" || task.provider === "comfyui") {
-        const result = pluginVideoResults.get(task.id);
+        const result = await readVideoResult(task.id);
         return result ? { status: "completed", result } : { status: "failed", error: apiText("pluginVideoExpired") };
     }
     const requestConfig = resolveModelRequestConfig(config, task.model);
@@ -109,7 +151,7 @@ async function createPluginVideoTask(config: AiConfig, model: string, script: st
         }),
     );
     const id = nanoid();
-    pluginVideoResults.set(id, result);
+    await stashVideoResult(id, result);
     return { id, provider: "plugin", model };
 }
 
@@ -157,7 +199,7 @@ async function createComfyuiVideoTask(config: AiConfig, model: string, prompt: s
     if (!first) throw new Error(apiText("noPlayableVideo"));
     const blob = await (await fetch(first)).blob();
     const id = nanoid();
-    pluginVideoResults.set(id, { blob, mimeType: blob.type || "video/mp4" });
+    await stashVideoResult(id, { blob, mimeType: blob.type || "video/mp4" });
     return { id, provider: "comfyui", model };
 }
 

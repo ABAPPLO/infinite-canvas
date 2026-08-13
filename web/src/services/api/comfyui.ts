@@ -56,12 +56,20 @@ const ANNOTATION_NODE_TYPES = new Set(["Note", "MarkdownNote"]);
  *  an object_info input, so it must be skipped when mapping widgets_values positionally. */
 const CONTROL_AFTER_GENERATE = new Set(["fixed", "increment", "decrement", "randomize"]);
 
+/** Every type some node outputs is a linkable connection type; used to tell custom-node combo
+ *  widgets (non-standard type names) apart from real connection slots. */
+export function buildLinkableTypes(objectInfo: ComfyuiObjectInfo): Set<string> {
+    const linkableTypes = new Set<string>();
+    for (const def of Object.values(objectInfo)) for (const t of def.output || []) linkableTypes.add(t);
+    return linkableTypes;
+}
+
 /** An object_info input is a widget (not a connection slot) when its type is a primitive
  *  (INT/FLOAT/STRING/BOOLEAN), a combo (spec[0] is a list of allowed values), or a non-standard type
  *  name that no node outputs — custom nodes sometimes type a combo with their own name, so anything
  *  that isn't a known linkable (output) type is an unwired widget. Typed inputs like
  *  MODEL/CLIP/IMAGE/LATENT/CONDITIONING are connection slots (they appear as node outputs). */
-function isWidgetInput(spec: unknown[] | undefined, linkableTypes: Set<string>): boolean {
+export function isWidgetInput(spec: unknown[] | undefined, linkableTypes: Set<string>): boolean {
     const t = Array.isArray(spec) ? spec[0] : undefined;
     if (Array.isArray(t) || t === "INT" || t === "FLOAT" || t === "STRING" || t === "BOOLEAN") return true;
     return typeof t === "string" && !linkableTypes.has(t);
@@ -80,8 +88,7 @@ export function convertGraphToPrompt(graph: GraphJson, objectInfo: ComfyuiObject
 
     // Every type some node outputs is a linkable connection type; used to tell custom-node combo widgets
     // (non-standard type names) apart from real connection slots.
-    const linkableTypes = new Set<string>();
-    for (const def of Object.values(objectInfo)) for (const t of def.output || []) linkableTypes.add(t);
+    const linkableTypes = buildLinkableTypes(objectInfo);
 
     const prompt: ConvertResult["prompt"] = {};
     const errors: string[] = [];
@@ -426,6 +433,28 @@ function pruneToOutput(graph: Record<string, any>, outputNode: string): Record<s
     return pruned;
 }
 
+/** Build a human-readable detail string from a finalized ComfyUI /history status. ComfyUI records
+ *  execution errors as entries in status.messages (execution_error carries an exception_message);
+ *  fall back to status_str ("error") and finally a generic label. */
+function describeComfyuiStatus(status: { status_str?: string; messages?: unknown[] }): string {
+    const msgs = Array.isArray(status.messages) ? status.messages : [];
+    const parts = msgs
+        .map((m) => {
+            if (m && typeof m === "object") {
+                const mm = m as Record<string, unknown>;
+                if (typeof mm.exception_message === "string") return mm.exception_message;
+                if (typeof mm.message === "string") return mm.message;
+                if (typeof mm.error === "string") return mm.error;
+                return "";
+            }
+            return typeof m === "string" ? m : "";
+        })
+        .filter(Boolean);
+    if (parts.length) return parts.join("; ");
+    if (msgs.length) return JSON.stringify(msgs);
+    return status.status_str || "execution failed";
+}
+
 function sleep(ms: number, signal?: AbortSignal) {
     return new Promise<void>((resolve, reject) => {
         if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
@@ -466,11 +495,21 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     if (!io.outputNode) throw new Error(i18n.t("config.comfyui.outputNodeNotConfigured"));
 
     const graph = JSON.parse(JSON.stringify(meta.promptJson)) as Record<string, any>;
-    setNodeInput(graph, io.promptText, args.prompt);
-    if (io.negativeText && args.negativePrompt !== undefined) setNodeInput(graph, io.negativeText, args.negativePrompt);
-    if (io.seed) setNodeInput(graph, io.seed, Math.floor(Math.random() * 1_000_000_000_000));
-    if (io.width && args.size?.width) setNodeInput(graph, io.width, args.size.width);
-    if (io.height && args.size?.height) setNodeInput(graph, io.height, args.size.height);
+    // Track every node we actually injected a value into. pruneToOutput below keeps only nodes that
+    // feed the output; if a mapped node sits on a branch not wired to the output, pruning would drop
+    // it (and the prompt/reference/param we just wrote) and the user would get a result that silently
+    // ignores their mapped input. A mapping that doesn't feed the output is a config error — surface it.
+    const injectedNodes = new Set<string>();
+    const inject = (slot: { node: string; input: string } | undefined, value: unknown) => {
+        if (!slot) return;
+        setNodeInput(graph, slot, value);
+        injectedNodes.add(slot.node);
+    };
+    inject(io.promptText, args.prompt);
+    if (io.negativeText && args.negativePrompt !== undefined) inject(io.negativeText, args.negativePrompt);
+    if (io.seed) inject(io.seed, Math.floor(Math.random() * 1_000_000_000_000));
+    if (io.width && args.size?.width) inject(io.width, args.size.width);
+    if (io.height && args.size?.height) inject(io.height, args.size.height);
     // Canvas settings (quality/count/video seconds/...) → mapped node inputs. Numeric sources are coerced
     // to numbers; enum sources translate via valueMap (canvas value → ComfyUI value); a source with a
     // valueMap whose key is absent is skipped; a source without a valueMap passes the raw string through.
@@ -485,7 +524,7 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
             mapped = typeof v === "number" ? v : /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
         } else if (param.valueMap) continue;
         else mapped = String(raw);
-        setNodeInput(graph, { node: param.node, input: param.input }, mapped);
+        inject({ node: param.node, input: param.input }, mapped);
     }
     // Positional multi-reference: ref[i] → referenceImages[i]. Extras clamped.
     const refSlots = io.referenceImages ?? [];
@@ -493,7 +532,7 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     for (let i = 0; i < refSlots.length; i++) {
         if (i >= refs.length) break;
         const uploaded = await uploadImage(target, refs[i], signal);
-        setNodeInput(graph, refSlots[i], uploaded.name);
+        inject(refSlots[i], uploaded.name);
     }
     // Reference loaders the user didn't supply must not leak the workflow's saved default image. Unwire
     // their consumers where the input is optional (per object_info); pruneToOutput below then drops the
@@ -513,6 +552,13 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     }
     patchRequiredDefaults(graph);
     const submitGraph = pruneToOutput(graph, io.outputNode);
+    // pruneToOutput dropped any node not feeding the output. If one of those was a node we injected
+    // into above, the supplied prompt/reference/param was silently discarded — the result would ignore
+    // a mapping the user configured. Surface it as a config error instead. (Unused reference loaders
+    // are intentionally pruned and are not in injectedNodes, so they don't trip this check.)
+    for (const id of injectedNodes) {
+        if (!submitGraph[id]) throw new Error(i18n.t("config.comfyui.mappedNodeUnreachable", { id }));
+    }
 
     let submit: { prompt_id?: string; node_errors?: Record<string, unknown>; error?: string };
     try {
@@ -537,23 +583,28 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
     const stalledTimeout = 300_000; // absent from the queue for 5 min → presume it died
     for (;;) {
         if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        const history = await comfyuiRequest<Record<string, { outputs?: Record<string, Record<string, ComfyuiOutputImage[]>>; status?: { completed?: boolean; status_str?: string } }>>(target, "get", `/history/${promptId}`, undefined, signal);
+        const history = await comfyuiRequest<Record<string, { outputs?: Record<string, Record<string, ComfyuiOutputImage[]>>; status?: { completed?: boolean; status_str?: string; messages?: unknown[] } }>>(target, "get", `/history/${promptId}`, undefined, signal);
         const entry = history[promptId];
-        if (entry?.status?.completed) {
-            const nodeOutput = entry.outputs?.[io.outputNode];
-            // Savers surface results under varying keys (images / gifs / videos / audio …) depending on
-            // type (SaveImage, VHS_VideoCombine, SaveVideo, SaveAudio). Collect every file-like entry
-            // regardless of key so video/audio outputs read just like images.
-            const entries = Object.values(nodeOutput ?? {})
-                .flat()
-                .filter((v): v is ComfyuiOutputImage => Boolean(v && typeof v.filename === "string"));
-            if (!entries.length) throw new Error(i18n.t("config.comfyui.noOutput"));
-            return Promise.all(entries.map((image) => fetchView(target, image, signal)));
-        }
-        // A history entry that didn't reach completed means execution errored — surface ComfyUI's status
-        // instead of making the user wait out the stall timer.
-        if (entry?.status && entry.status.completed === false) {
-            throw new Error(`${i18n.t("config.comfyui.submitFailed")}: ${entry.status.status_str || "execution failed"}`);
+        // ComfyUI only writes a /history entry once a prompt finishes — success OR error — and sets
+        // status.completed=true in both cases; status_str ("success"/"error") is what distinguishes
+        // them. So a completed entry is not necessarily a success: surface execution errors here
+        // instead of returning a partial/missing output as if it succeeded (the old completed-true
+        // branch fired on errored jobs too and swallowed ComfyUI's error status).
+        if (entry?.status) {
+            if (entry.status.status_str === "error" || entry.status.completed === false) {
+                throw new Error(i18n.t("config.comfyui.jobFailed", { detail: describeComfyuiStatus(entry.status) }));
+            }
+            if (entry.status.completed) {
+                const nodeOutput = entry.outputs?.[io.outputNode];
+                // Savers surface results under varying keys (images / gifs / videos / audio …) depending on
+                // type (SaveImage, VHS_VideoCombine, SaveVideo, SaveAudio). Collect every file-like entry
+                // regardless of key so video/audio outputs read just like images.
+                const entries = Object.values(nodeOutput ?? {})
+                    .flat()
+                    .filter((v): v is ComfyuiOutputImage => Boolean(v && typeof v.filename === "string"));
+                if (!entries.length) throw new Error(i18n.t("config.comfyui.noOutput"));
+                return Promise.all(entries.map((image) => fetchView(target, image, signal)));
+            }
         }
         // Still pending: refresh the patience window only while the job remains alive in the queue.
         const queue = await comfyuiRequest<{ queue_running?: unknown[]; queue_pending?: unknown[] }>(target, "get", "/queue", undefined, signal);

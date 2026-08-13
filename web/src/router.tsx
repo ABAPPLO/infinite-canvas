@@ -1,6 +1,7 @@
 import { createBrowserRouter, Outlet } from "react-router-dom";
 
 import { AnalyticsTracker } from "@/components/layout/analytics-tracker";
+import { RouteErrorBoundary } from "@/components/layout/error-boundary";
 import UserLayout from "@/layouts/user-layout";
 import AssetsPage from "@/pages/assets";
 import CanvasPage from "@/pages/canvas";
@@ -17,7 +18,9 @@ export const router = createBrowserRouter([
         element: (
             <UserLayout>
                 <AnalyticsTracker />
-                <Outlet />
+                <RouteErrorBoundary>
+                    <Outlet />
+                </RouteErrorBoundary>
             </UserLayout>
         ),
         children: [

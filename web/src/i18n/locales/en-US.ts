@@ -27,6 +27,10 @@ export default {
         durationMinutes: "{{minutes}}m {{seconds}}s",
         durationSeconds: "{{seconds}}s",
         imageReadFailed: "Failed to read image",
+        retry: "Retry",
+        backHome: "Back home",
+        renderErrorTitle: "Something went wrong",
+        renderErrorHint: "A render error occurred. You can retry, or go back home to keep using the app.",
     },
     settingsPanels: {
         common: { auto: "Auto", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" },
@@ -351,6 +355,8 @@ export default {
         busy: "The Video Studio is already running a task",
         generated: "Video generated",
         timeout: "Video generation timed out. Try again later.",
+        stop: "Stop",
+        canceled: "Canceled",
         resultTitle: "Generated video",
         source: "Video Studio",
         empty: "No video generated yet",
@@ -1122,6 +1128,8 @@ export default {
             viewFailed: "Failed to read generated image from ComfyUI",
             pollTimeout: "ComfyUI generation timed out; please retry (--lowvram first frame is slow).",
             submitFailed: "Failed to submit the ComfyUI workflow",
+            jobFailed: "ComfyUI execution failed: {{detail}}",
+            mappedNodeUnreachable: "Mapped node {{id}} does not feed into the output node; the injected value would not affect output — check the IO node mapping.",
         },
         protocols: {
             ark: "Volcengine Ark",
