@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [修复] ComfyUI 视频模型（bernini 视频参考、角色替换等）的参考视频/参考图被静默丢弃：参考视频现经 `/upload/video` 上传并注入 LoadVideo 节点，IO 面板可配置参考视频槽位；工作流配置了参考槽位但未提供参考资产时直接报错，不再静默退化为文生视频（edit 模型默认文件不再被偷用）。
++ [修复] 画布刷新后参考图丢失：`imageToDataUrl` 优先按 storageKey 从 localforage 恢复，避免使用刷新后失效的 blob URL，始终返回 data: URL 以保住下游图片校验。
 + [新增] 前端页面渲染崩溃不再整页白屏：在路由内容区加 ErrorBoundary，页面渲染抛错时显示「重试 / 返回首页」兜底页，顶栏与 Agent 面板保持可用，无需强制刷新即可恢复（确定性错误点「返回首页」卸载崩溃路由）。
 + [修复] ComfyUI 参数映射下拉列出连接类输入（MODEL/CLIP/IMAGE/LATENT/VAE 等），用户若把画布参数映射到这些槽位会覆盖连接值、破坏图结构；改为只列出 widget 类输入（基础类型/combo），已选的历史绑定仍保留可选项避免静默消失。
 + [修复] 视频工作台生成过程无法中断：任务创建与轮询未传入取消信号，ComfyUI 视频渲染（runComfyui 轮询 /history 可达数分钟）期间点停止无效；新增 AbortController 贯穿创建与轮询，运行中显示「停止」按钮，离开页面也会中止后台轮询。

@@ -64,6 +64,7 @@ export function ComfyuiIoModal({ open, target, promptJson, capability, initial, 
         promptText: initial.promptText ?? { node: "", input: "text" },
         negativeText: initial.negativeText,
         referenceImages: initial.referenceImages ?? [],
+        referenceVideos: initial.referenceVideos ?? [],
         width: initial.width,
         height: initial.height,
         seed: initial.seed,
@@ -77,6 +78,7 @@ export function ComfyuiIoModal({ open, target, promptJson, capability, initial, 
             ...prev,
             promptText: prev.promptText?.node ? prev.promptText : (inventory.defaults.promptText ?? prev.promptText),
             referenceImages: prev.referenceImages?.length ? prev.referenceImages : (inventory.defaults.referenceImages ?? []),
+            referenceVideos: prev.referenceVideos?.length ? prev.referenceVideos : (inventory.defaults.referenceVideos ?? []),
             width: prev.width ?? inventory.defaults.width,
             height: prev.height ?? inventory.defaults.height,
             seed: prev.seed ?? inventory.defaults.seed,
@@ -87,6 +89,7 @@ export function ComfyuiIoModal({ open, target, promptJson, capability, initial, 
 
     const textOptions = (inventory?.textInputs ?? []).map((s) => ({ label: `${s.node} · ${s.classType}.${s.input}`, value: `${s.node}::${s.input}` }));
     const refOptions = (inventory?.referenceImages ?? []).map((s) => ({ label: `${s.node} · ${s.classType}`, value: `${s.node}::${s.input}` }));
+    const refVideoOptions = (inventory?.referenceVideos ?? []).map((s) => ({ label: `${s.node} · ${s.classType}`, value: `${s.node}::${s.input}` }));
     const outputOptions = (inventory?.outputs ?? []).map((o) => ({ label: `${o.node} · ${o.classType} (${o.capability})`, value: o.node }));
     const widthOptions = (inventory?.width ?? []).map((s) => ({ label: `${s.node} · ${s.classType}.${s.input}`, value: `${s.node}::${s.input}` }));
     const heightOptions = (inventory?.height ?? []).map((s) => ({ label: `${s.node} · ${s.classType}.${s.input}`, value: `${s.node}::${s.input}` }));
@@ -129,6 +132,8 @@ export function ComfyuiIoModal({ open, target, promptJson, capability, initial, 
 
     const selectedRefKeys = new Set((value.referenceImages ?? []).map((s) => `${s.node}::${s.input}`));
     const addableReferences = refOptions.filter((opt) => !selectedRefKeys.has(opt.value));
+    const selectedRefVideoKeys = new Set((value.referenceVideos ?? []).map((s) => `${s.node}::${s.input}`));
+    const addableVideoReferences = refVideoOptions.filter((opt) => !selectedRefVideoKeys.has(opt.value));
 
     const moveReference = (index: number, dir: -1 | 1) =>
         setValue((prev) => {
@@ -140,6 +145,16 @@ export function ComfyuiIoModal({ open, target, promptJson, capability, initial, 
         });
     const removeReference = (index: number) => setValue((prev) => ({ ...prev, referenceImages: (prev.referenceImages ?? []).filter((_, i) => i !== index) }));
     const addReference = (slot: { node: string; input: string }) => setValue((prev) => ({ ...prev, referenceImages: [...(prev.referenceImages ?? []), slot] }));
+    const moveReferenceVideo = (index: number, dir: -1 | 1) =>
+        setValue((prev) => {
+            const list = [...(prev.referenceVideos ?? [])];
+            const to = index + dir;
+            if (to < 0 || to >= list.length) return prev;
+            [list[index], list[to]] = [list[to], list[index]];
+            return { ...prev, referenceVideos: list };
+        });
+    const removeReferenceVideo = (index: number) => setValue((prev) => ({ ...prev, referenceVideos: (prev.referenceVideos ?? []).filter((_, i) => i !== index) }));
+    const addReferenceVideo = (slot: { node: string; input: string }) => setValue((prev) => ({ ...prev, referenceVideos: [...(prev.referenceVideos ?? []), slot] }));
 
     const updateParam = (index: number, partial: Partial<ComfyuiParamOverride>) => setValue((prev) => ({ ...prev, params: (prev.params ?? []).map((p, i) => (i === index ? { ...p, ...partial } : p)) }));
     const addParam = () => setValue((prev) => ({ ...prev, params: [...(prev.params ?? []), { source: "quality", node: "", input: "" }] }));
@@ -214,6 +229,39 @@ export function ComfyuiIoModal({ open, target, promptJson, capability, initial, 
                                     options={addableReferences}
                                     onChange={(v) => {
                                         if (typeof v === "string") addReference(decodeSlot(v));
+                                    }}
+                                />
+                            </Space>
+                        </Field>
+                        <Field label={t("config.comfyui.referenceVideoNodes")} hint={refVideoOptions.length ? undefined : t("config.comfyui.ioEmpty")}>
+                            <Space direction="vertical" size="small" className="w-full">
+                                <Typography.Text type="secondary" className="text-xs">
+                                    {t("config.comfyui.referenceOrderHint")}
+                                </Typography.Text>
+                                {value.referenceVideos?.map((slot, index) => (
+                                    <div key={`${slot.node}::${slot.input}`} className="flex items-center gap-2">
+                                        <span className="flex-1 truncate text-sm">
+                                            {slot.node} · {slot.input}
+                                        </span>
+                                        <Button size="small" disabled={index === 0} onClick={() => moveReferenceVideo(index, -1)}>
+                                            ↑
+                                        </Button>
+                                        <Button size="small" disabled={index === (value.referenceVideos?.length ?? 0) - 1} onClick={() => moveReferenceVideo(index, 1)}>
+                                            ↓
+                                        </Button>
+                                        <Button size="small" danger onClick={() => removeReferenceVideo(index)}>
+                                            ✕
+                                        </Button>
+                                    </div>
+                                ))}
+                                <Select
+                                    className="w-full"
+                                    showSearch
+                                    placeholder={t("config.comfyui.referenceVideoAdd")}
+                                    value={undefined}
+                                    options={addableVideoReferences}
+                                    onChange={(v) => {
+                                        if (typeof v === "string") addReferenceVideo(decodeSlot(v));
                                     }}
                                 />
                             </Space>

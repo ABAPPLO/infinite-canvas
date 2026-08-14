@@ -215,6 +215,7 @@ export type ComfyuiOutputCandidate = { node: string; classType: string; capabili
 export type ComfyuiNodeInventory = {
     textInputs: ComfyuiInputSlot[]; // STRING-typed inputs → prompt candidates
     referenceImages: ComfyuiInputSlot[]; // LoadImage-style nodes → reference image slots
+    referenceVideos: ComfyuiInputSlot[]; // LoadVideo-style nodes → reference video slots
     width: ComfyuiInputSlot[]; // latent width inputs → image-size injection targets
     height: ComfyuiInputSlot[]; // latent height inputs
     seed: ComfyuiInputSlot[]; // KSampler seed inputs
@@ -223,6 +224,11 @@ export type ComfyuiNodeInventory = {
 };
 
 const REFERENCE_LOADER_TYPES = new Set(["LoadImage", "LoadImageBatch", "LoadImageByUrl"]);
+
+/** VHS video loaders register under varying names (VHS_LoadVideo, LoadVideo, …); match by name. */
+function isVideoLoader(classType: string): boolean {
+    return /LoadVideo/i.test(classType);
+}
 
 function inputTypeOf(spec: unknown): string | undefined {
     return Array.isArray(spec) && typeof spec[0] === "string" ? spec[0] : undefined;
@@ -253,6 +259,7 @@ function capabilityForClass(classType: string, def: ComfyuiObjectInfo[string] | 
 export function buildComfyuiNodeInventory(promptJson: Record<string, any>, objectInfo: ComfyuiObjectInfo): ComfyuiNodeInventory {
     const textInputs: ComfyuiInputSlot[] = [];
     const referenceImages: ComfyuiInputSlot[] = [];
+    const referenceVideos: ComfyuiInputSlot[] = [];
     const width: ComfyuiInputSlot[] = [];
     const height: ComfyuiInputSlot[] = [];
     const seed: ComfyuiInputSlot[] = [];
@@ -271,6 +278,7 @@ export function buildComfyuiNodeInventory(promptJson: Record<string, any>, objec
             }
         }
         if (REFERENCE_LOADER_TYPES.has(classType)) referenceImages.push({ node: id, input: "image", classType });
+        if (isVideoLoader(classType)) referenceVideos.push({ node: id, input: "video", classType });
         if (LATENT_TYPES.has(classType)) {
             if ("width" in inputs) width.push({ node: id, input: "width", classType });
             if ("height" in inputs) height.push({ node: id, input: "height", classType });
@@ -287,11 +295,12 @@ export function buildComfyuiNodeInventory(promptJson: Record<string, any>, objec
     const defaults: Partial<ComfyuiIoMapping> = {};
     if (firstText) defaults.promptText = { node: firstText.node, input: firstText.input };
     if (referenceImages.length) defaults.referenceImages = referenceImages.map((r) => ({ node: r.node, input: r.input }));
+    if (referenceVideos.length) defaults.referenceVideos = referenceVideos.map((r) => ({ node: r.node, input: r.input }));
     if (width.length) defaults.width = { node: width[0].node, input: width[0].input };
     if (height.length) defaults.height = { node: height[0].node, input: height[0].input };
     if (seed.length) defaults.seed = { node: seed[0].node, input: seed[0].input };
     if (outputs.length) defaults.outputNode = outputs[0].node;
-    return { textInputs, referenceImages, width, height, seed, outputs, defaults };
+    return { textInputs, referenceImages, referenceVideos, width, height, seed, outputs, defaults };
 }
 
 export type ComfyuiWorkflowSummary = { name: string; promptJson: Record<string, any>; ok: boolean; reason?: string; source?: "server" | "import" };
@@ -372,6 +381,15 @@ async function uploadImage(target: string, dataUrl: string, signal?: AbortSignal
     return { name: result.name, subfolder: result.subfolder || "", type: result.type || "input" };
 }
 
+/** Upload a reference video (data URL) via the VHS /upload/video endpoint, field "video". Mirrors uploadImage. */
+async function uploadVideo(target: string, dataUrl: string, signal?: AbortSignal): Promise<{ name: string; subfolder: string; type: string }> {
+    const blob = await (await fetch(dataUrl)).blob();
+    const form = new FormData();
+    form.append("video", blob, "reference.mp4");
+    const result = await comfyuiRequest<{ name: string; subfolder: string; type: string }>(target, "post", "/upload/video", form, signal);
+    return { name: result.name, subfolder: result.subfolder || "", type: result.type || "input" };
+}
+
 /** Fetch a generated image blob from /view and convert to a data URL. */
 async function fetchView(target: string, image: ComfyuiOutputImage, signal?: AbortSignal): Promise<string> {
     const params = new URLSearchParams({ filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" });
@@ -397,15 +415,6 @@ function patchRequiredDefaults(graph: Record<string, any>) {
     for (const node of Object.values(graph) as Array<any>) {
         if (node.class_type === "SaveImage" && node.inputs.filename_prefix === undefined) node.inputs.filename_prefix = "infinite_canvas";
     }
-}
-
-/** Whether a node input is optional per object_info (in the optional group, not required). Unknown inputs
- *  are treated as required (conservative) so we never unwire something a node needs to run. */
-function isOptionalInput(objectInfo: ComfyuiObjectInfo, classType: string, inputName: string): boolean {
-    const def = objectInfo[classType]?.input;
-    if (!def) return false;
-    if (inputName in (def.required || {})) return false;
-    return inputName in (def.optional || {});
 }
 
 /** Keep only nodes reachable (reverse-traversing connection values) from the output node. Workflows can
@@ -476,6 +485,7 @@ export type RunComfyuiArgs = {
     prompt: string;
     negativePrompt?: string;
     references?: string[];
+    referenceVideos?: string[];
     size?: { width?: number; height?: number };
     settings?: Partial<Record<ComfyuiParamSource, string | number>>; // canvas settings → mapped node inputs (io.params)
     signal?: AbortSignal;
@@ -526,36 +536,30 @@ export async function runComfyui(args: RunComfyuiArgs): Promise<string[]> {
         else mapped = String(raw);
         inject({ node: param.node, input: param.input }, mapped);
     }
-    // Positional multi-reference: ref[i] → referenceImages[i]. Extras clamped.
+    // Positional multi-reference: ref[i] → referenceImages[i]. A configured slot with no supplied
+    // reference must error, not silently fall back to the workflow's saved default image — that would
+    // turn an image-to-X task into a text-to-X task without notice (e.g. edit models carrying a default
+    // like AN0I3132.jpg).
     const refSlots = io.referenceImages ?? [];
     const refs = args.references ?? [];
+    if (refSlots.length > refs.length) throw new Error(i18n.t("config.comfyui.referenceImageMissing"));
     for (let i = 0; i < refSlots.length; i++) {
-        if (i >= refs.length) break;
         const uploaded = await uploadImage(target, refs[i], signal);
         inject(refSlots[i], uploaded.name);
     }
-    // Reference loaders the user didn't supply must not leak the workflow's saved default image. Unwire
-    // their consumers where the input is optional (per object_info); pruneToOutput below then drops the
-    // now-orphaned loader. Required inputs keep the loader + default so the graph stays valid. Only
-    // io.referenceImages slots are touched — other image nodes in the workflow are left alone.
-    const unusedLoaders = new Set(refSlots.slice(refs.length).map((slot) => slot.node));
-    if (unusedLoaders.size) {
-        const objectInfo = await getObjectInfo(target, signal);
-        for (const node of Object.values(graph) as Array<any>) {
-            if (typeof node.class_type !== "string") continue;
-            for (const [name, value] of Object.entries(node.inputs || {})) {
-                if (Array.isArray(value) && unusedLoaders.has(String(value[0])) && isOptionalInput(objectInfo, node.class_type, name)) {
-                    delete node.inputs[name];
-                }
-            }
-        }
+    // Positional video references: videoRef[i] → referenceVideos[i] (LoadVideo nodes), same rule.
+    const videoSlots = io.referenceVideos ?? [];
+    const videoRefs = args.referenceVideos ?? [];
+    if (videoSlots.length > videoRefs.length) throw new Error(i18n.t("config.comfyui.referenceVideoMissing"));
+    for (let i = 0; i < videoSlots.length; i++) {
+        const uploaded = await uploadVideo(target, videoRefs[i], signal);
+        inject(videoSlots[i], uploaded.name);
     }
     patchRequiredDefaults(graph);
     const submitGraph = pruneToOutput(graph, io.outputNode);
     // pruneToOutput dropped any node not feeding the output. If one of those was a node we injected
     // into above, the supplied prompt/reference/param was silently discarded — the result would ignore
-    // a mapping the user configured. Surface it as a config error instead. (Unused reference loaders
-    // are intentionally pruned and are not in injectedNodes, so they don't trip this check.)
+    // a mapping the user configured. Surface it as a config error instead.
     for (const id of injectedNodes) {
         if (!submitGraph[id]) throw new Error(i18n.t("config.comfyui.mappedNodeUnreachable", { id }));
     }

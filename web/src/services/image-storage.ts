@@ -51,9 +51,13 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
 }
 
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
-    const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
-    if (!url || url.startsWith("data:")) return url;
-    return blobToDataUrl(await (await fetch(url)).blob());
+    // Prefer the persistent storageKey (localforage survives a reload); dataUrl/url are fallback only —
+    // a stale blob: URL in dataUrl becomes invalid after reload and would lose the reference image.
+    // Always return a data: URL: callers like resolveCanvasReferenceReferences check startsWith("data:image/").
+    const resolved = await resolveImageUrl(image.storageKey, image.dataUrl || image.url || "");
+    if (!resolved) return "";
+    if (resolved.startsWith("data:")) return resolved;
+    return blobToDataUrl(await (await fetch(resolved)).blob());
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {

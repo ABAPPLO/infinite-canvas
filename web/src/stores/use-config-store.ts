@@ -34,6 +34,7 @@ export type ComfyuiIoMapping = {
     promptText: ComfyuiIoSlot; // positive prompt, e.g. { node: "<CLIPTextEncode id>", input: "text" }
     negativeText?: ComfyuiIoSlot; // optional negative prompt
     referenceImages?: ComfyuiIoSlot[]; // ordered image-to-image sources: ref[i] → LoadImage slot i
+    referenceVideos?: ComfyuiIoSlot[]; // ordered video references: videoRef[i] → LoadVideo slot i
     width?: ComfyuiIoSlot; // e.g. { node: "<EmptyLatentImage id>", input: "width" }
     height?: ComfyuiIoSlot;
     seed?: ComfyuiIoSlot; // e.g. { node: "<KSampler id>", input: "seed" }

@@ -107,7 +107,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
     const script = resolveModelScript(config, selectedModel);
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
-    if (requestConfig.apiFormat === "comfyui") return createComfyuiVideoTask(requestConfig, selectedModel, prompt, references, options);
+    if (requestConfig.apiFormat === "comfyui") return createComfyuiVideoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     assertVideoConfig(requestConfig, requestConfig.model);
     if (isSeedanceVideoConfig(requestConfig)) {
         return createSeedanceTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
@@ -181,16 +181,21 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
 
 /** ComfyUI video workflows run to completion synchronously via runComfyui (it polls /history internally),
  *  so the result is ready at task creation — stashed in the sync-result map and surfaced on first poll. */
-async function createComfyuiVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {
+async function createComfyuiVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
     const entry = resolveChannelModelEntry(config, model);
     if (!entry?.model.comfyui) throw new Error(apiText("videoTaskCreateFailed"));
+    // Audio references aren't wired into ComfyUI yet (no audio-ref model in scope); fail loud rather
+    // than silently dropping them.
+    if (audioReferences.length) throw new Error(apiText("videoReferencesUnsupported"));
     const referenceDataUrls = await Promise.all(references.map((image) => imageToDataUrl(image)));
+    const referenceVideoDataUrls = await Promise.all(videoReferences.map((video) => videoReferenceToDataUrl(video)));
     const dims = parseImageDimensions(normalizeVideoSize(config.size) ?? "") ?? undefined;
     const dataUrls = await runComfyui({
         target: config.baseUrl,
         meta: entry.model.comfyui,
         prompt,
         references: referenceDataUrls,
+        referenceVideos: referenceVideoDataUrls,
         size: dims,
         settings: { count: config.count, quality: config.quality, background: config.background, videoSeconds: config.videoSeconds, vquality: config.vquality, videoGenerateAudio: config.videoGenerateAudio },
         signal: options?.signal,
@@ -346,6 +351,22 @@ async function resolveSeedanceAudioUrl(audio: ReferenceAudio) {
     if (!blob && audio.url?.startsWith("blob:")) blob = await (await fetch(audio.url)).blob();
     if (!blob) throw new Error(apiText("invalidReferenceAudio"));
     return blobToDataUrl(blob);
+}
+
+/** Resolve a reference video to a data: URL for ComfyUI /upload/video. Unlike resolveSeedanceVideoUrl
+ *  (which passes asset:// and public URLs through for a server to fetch), ComfyUI upload needs a blob
+ *  the browser can read, so every source is materialized into a data: URL. Canvas video nodes carry a
+ *  storageKey, so the local path is the common case. */
+async function videoReferenceToDataUrl(video: ReferenceVideo): Promise<string> {
+    if (video.storageKey) {
+        const blob = await getMediaBlob(video.storageKey);
+        if (blob) return blobToDataUrl(blob);
+    }
+    const url = video.url || "";
+    if (url.startsWith("data:") || url.startsWith("blob:") || isPublicMediaUrl(url)) {
+        return blobToDataUrl(await (await fetch(url)).blob());
+    }
+    throw new Error(apiText("invalidReferenceVideo"));
 }
 
 async function videoResultFromUrl(url: string, options?: RequestOptions): Promise<VideoGenerationResult> {
